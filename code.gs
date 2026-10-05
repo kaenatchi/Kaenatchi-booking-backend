@@ -765,13 +765,25 @@ function doPost(e) {
 
 
     /* =====================================================
-       ارسال اعلان ادمین
+       صف اعلان Telegram
     ===================================================== */
 
-    console.log("[BOOKING DEBUG] row saved; starting Telegram notification outside lock");
+    /*
+     * ثبت نوبت کاملاً تمام شده است.
+     *
+     * نکته مهم:
+     * اینجا دیگر مستقیماً UrlFetchApp به Telegram نمی‌زنیم.
+     * چون Mini App منتظر پایان doPost می‌ماند و یک ارتباط کند/گیرکرده
+     * با Telegram می‌تواند صفحه را روی «لودینگ» نگه دارد.
+     *
+     * اطلاعات اعلان در یک صف داخلی ذخیره می‌شود و Trigger جداگانه
+     * آن را پردازش می‌کند. بنابراین ثبت نوبت به Telegram وابسته نیست.
+     */
+    console.log("[BOOKING DEBUG] row saved; queueing Telegram notification");
 
-    var telegramResult =
-      sendBookingToTelegram({
+    try {
+
+      queueBookingNotifications_({
 
         name:
           firstName +
@@ -825,39 +837,15 @@ function doPost(e) {
 
       });
 
+    } catch (notificationQueueError) {
 
-    if (!telegramResult.ok) {
-
+      /*
+       * حتی اگر صف اعلان مشکل داشته باشد، خود رزرو نباید شکست بخورد.
+       * ردیف نوبت قبلاً با موفقیت ثبت شده است.
+       */
       console.error(
-        "Telegram notification failed: " +
-        telegramResult.error
-      );
-
-    }
-
-
-    /* =====================================================
-       پیام به مشتری
-    ===================================================== */
-
-    if (telegramChatId) {
-
-      sendCustomerBookingPending(
-        telegramChatId,
-        {
-          trackingCode:
-            tracking,
-
-          date:
-            date,
-
-          time:
-            time,
-
-          service:
-            service
-
-        }
+        "[BOOKING DEBUG] notification queue failed: " +
+        notificationQueueError.message
       );
 
     }
@@ -6912,6 +6900,397 @@ function testTelegramDeleteAndSend() {
     newSendResponse.getContentText()
   );
 }
+
+/* =========================================================
+   صف اعلان‌های Telegram | مستقل از ثبت نوبت
+========================================================= */
+
+/*
+ * این تابع را فقط یک بار در Apps Script اجرا کنید:
+ * setupBookingNotificationTrigger()
+ *
+ * بعد از آن، Trigger هر دقیقه صف اعلان‌ها را بررسی می‌کند.
+ */
+function setupBookingNotificationTrigger() {
+
+  var functionName =
+    "processBookingNotificationQueue";
+
+  var triggers =
+    ScriptApp.getProjectTriggers();
+
+  for (
+    var i = 0;
+    i < triggers.length;
+    i++
+  ) {
+
+    if (
+      triggers[i].getHandlerFunction() ===
+      functionName
+    ) {
+
+      return "Trigger قبلاً فعال است.";
+
+    }
+
+  }
+
+  ScriptApp
+    .newTrigger(functionName)
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+
+  return "Trigger اعلان‌های نوبت با موفقیت فعال شد.";
+
+}
+
+
+/*
+ * ساخت صف اعلان.
+ *
+ * ستون‌ها:
+ * A زمان ایجاد
+ * B وضعیت اعلان ادمین
+ * C وضعیت پیام مشتری
+ * D کد پیگیری
+ * E شناسه درخواست
+ * F اطلاعات کامل اعلان
+ * G آخرین خطا
+ */
+function queueBookingNotifications_(data) {
+
+  var sheetId =
+    PropertiesService
+      .getScriptProperties()
+      .getProperty(
+        PROP_SHEET_ID
+      );
+
+  if (
+    !sheetId
+  ) {
+    throw new Error(
+      "BOOKING_SHEET_ID پیدا نشد."
+    );
+  }
+
+  var ss =
+    SpreadsheetApp.openById(
+      sheetId
+    );
+
+  var sheet =
+    ss.getSheetByName(
+      "صف اعلان‌ها"
+    );
+
+  if (
+    !sheet
+  ) {
+
+    sheet =
+      ss.insertSheet(
+        "صف اعلان‌ها"
+      );
+
+    sheet.getRange(
+      1,
+      1,
+      1,
+      7
+    ).setValues([
+      [
+        "زمان ایجاد",
+        "وضعیت اعلان ادمین",
+        "وضعیت پیام مشتری",
+        "کد پیگیری",
+        "شناسه درخواست",
+        "اطلاعات اعلان",
+        "آخرین خطا"
+      ]
+    ]);
+
+  }
+
+  sheet.appendRow([
+    new Date(),
+    "در انتظار",
+    data.telegramChatId ? "در انتظار" : "نیازی نیست",
+    data.trackingCode || "",
+    data.clientRequestId || "",
+    JSON.stringify(data),
+    ""
+  ]);
+
+}
+
+
+/*
+ * پردازش صف اعلان‌ها.
+ *
+ * این تابع خارج از doPost اجرا می‌شود.
+ * بنابراین کندی Telegram دیگر ثبت نوبت را متوقف نمی‌کند.
+ */
+function processBookingNotificationQueue() {
+
+  var lock =
+    LockService.getScriptLock();
+
+  var acquired =
+    false;
+
+  try {
+
+    lock.waitLock(5000);
+    acquired = true;
+
+    var sheetId =
+      PropertiesService
+        .getScriptProperties()
+        .getProperty(
+          PROP_SHEET_ID
+        );
+
+    if (
+      !sheetId
+    ) {
+      throw new Error(
+        "BOOKING_SHEET_ID پیدا نشد."
+      );
+    }
+
+    var ss =
+      SpreadsheetApp.openById(
+        sheetId
+      );
+
+    var sheet =
+      ss.getSheetByName(
+        "صف اعلان‌ها"
+      );
+
+    if (
+      !sheet ||
+      sheet.getLastRow() < 2
+    ) {
+      return;
+    }
+
+    var values =
+      sheet
+        .getDataRange()
+        .getValues();
+
+    /*
+     * در هر اجرا تعداد محدودی اعلان پردازش می‌شود
+     * تا یک صف بزرگ باعث طولانی شدن Trigger نشود.
+     */
+    var processed =
+      0;
+
+    for (
+      var i = 1;
+      i < values.length &&
+      processed < 10;
+      i++
+    ) {
+
+      var row =
+        values[i];
+
+      var adminStatus =
+        cleanValue(row[1]);
+
+      var customerStatus =
+        cleanValue(row[2]);
+
+      if (
+        adminStatus !== "در انتظار" &&
+        customerStatus !== "در انتظار"
+      ) {
+        continue;
+      }
+
+      var payloadText =
+        cleanValue(row[5]);
+
+      if (
+        !payloadText
+      ) {
+        sheet
+          .getRange(i + 1, 7)
+          .setValue("اطلاعات اعلان خالی است.");
+        continue;
+      }
+
+      var data;
+
+      try {
+
+        data =
+          JSON.parse(
+            payloadText
+          );
+
+      } catch (parseError) {
+
+        sheet
+          .getRange(i + 1, 7)
+          .setValue(
+            "خطا در خواندن اطلاعات اعلان: " +
+            parseError.message
+          );
+
+        continue;
+
+      }
+
+      var errors = [];
+
+      /*
+       * اعلان ادمین
+       */
+      if (
+        adminStatus === "در انتظار"
+      ) {
+
+        try {
+
+          var telegramResult =
+            sendBookingToTelegram(
+              data
+            );
+
+          if (
+            telegramResult &&
+            telegramResult.ok
+          ) {
+
+            sheet
+              .getRange(i + 1, 2)
+              .setValue("ارسال شد");
+
+          } else {
+
+            errors.push(
+              "ادمین: " +
+              (
+                telegramResult &&
+                telegramResult.error
+                  ? telegramResult.error
+                  : "ارسال ناموفق"
+              )
+            );
+
+          }
+
+        } catch (adminError) {
+
+          errors.push(
+            "ادمین: " +
+            adminError.message
+          );
+
+        }
+
+      }
+
+      /*
+       * پیام مشتری
+       */
+      if (
+        customerStatus === "در انتظار" &&
+        data.telegramChatId
+      ) {
+
+        try {
+
+          sendCustomerBookingPending(
+            data.telegramChatId,
+            {
+              trackingCode:
+                data.trackingCode,
+
+              date:
+                data.date,
+
+              time:
+                data.time,
+
+              service:
+                data.service
+
+            }
+          );
+
+          sheet
+            .getRange(i + 1, 3)
+            .setValue("ارسال شد");
+
+        } catch (customerError) {
+
+          errors.push(
+            "مشتری: " +
+            customerError.message
+          );
+
+        }
+
+      } else if (
+        customerStatus === "در انتظار"
+      ) {
+
+        sheet
+          .getRange(i + 1, 3)
+          .setValue("نیازی نیست");
+
+      }
+
+      if (
+        errors.length
+      ) {
+
+        sheet
+          .getRange(i + 1, 7)
+          .setValue(
+            errors.join(" | ")
+          );
+
+      } else {
+
+        sheet
+          .getRange(i + 1, 7)
+          .setValue("");
+
+      }
+
+      processed++;
+
+    }
+
+  } catch (error) {
+
+    console.error(
+      "[BOOKING DEBUG] notification queue error: " +
+      error.message
+    );
+
+  } finally {
+
+    if (acquired) {
+
+      try {
+        lock.releaseLock();
+      } catch (e) {}
+
+    }
+
+  }
+
+}
+
 
 function processAppointmentReminders() {
 
