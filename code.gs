@@ -82,6 +82,12 @@ function doPost(e) {
     data = receivePostData(e);
 
 
+    /* عملیات مدیریتی پنل مرکزی */
+    if (data && data.central_admin_action) {
+      return handleCentralAdminAction(data);
+    }
+
+
     /*
      * اگر درخواست از Telegram Webhook آمده باشد،
      * مستقیماً به پردازش Telegram می‌رود.
@@ -1147,6 +1153,10 @@ function doGet(e) {
   /*
    * بررسی Webhook
    */
+  if (action === "centralAdminClosures") {
+    return jsonResponse(getAdminClosures());
+  }
+
   if (
     action ===
     "webhookInfo"
@@ -7426,4 +7436,154 @@ function jalaliToGregorian(
     gm,
     gd
   ];
+}
+
+
+/* =========================================================
+   پنل مرکزی | مدیریت تعطیلی‌ها
+========================================================= */
+
+function handleCentralAdminAction(data) {
+  var action = cleanValue(data.central_admin_action || "");
+
+  if (action === "addClosure") {
+    return jsonResponse(addAdminClosure(data));
+  }
+
+  if (action === "toggleClosure") {
+    return jsonResponse(toggleAdminClosure(data.row));
+  }
+
+  if (action === "deleteClosure") {
+    return jsonResponse(deleteAdminClosure(data.row));
+  }
+
+  return jsonResponse({
+    ok: false,
+    success: false,
+    message: "عملیات مدیریتی نامعتبر است."
+  });
+}
+
+function getAdminClosures() {
+  var ss = getBookingSpreadsheetForAdmin_();
+  var sheet = getClosureSheetForAdmin_(ss, false);
+
+  if (!sheet) {
+    return { ok: true, rows: [] };
+  }
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    return { ok: true, rows: [] };
+  }
+
+  var values = sheet.getRange(2, 1, lastRow - 1, Math.max(6, sheet.getLastColumn())).getDisplayValues();
+  var rows = [];
+
+  for (var i = 0; i < values.length; i++) {
+    rows.push({
+      row: i + 2,
+      startDate: cleanValue(values[i][0]),
+      startTime: normalizeSheetTime(values[i][1]) || "00:00",
+      endDate: cleanValue(values[i][2]),
+      endTime: normalizeSheetTime(values[i][3]) || "23:59",
+      active: normalizeText(values[i][4]) === normalizeText("فعال"),
+      reason: values[i][5] || ""
+    });
+  }
+
+  return { ok: true, rows: rows };
+}
+
+function addAdminClosure(data) {
+  var startDate = normalizeJalaliDateAdmin_(data.startDate);
+  var endDate = normalizeJalaliDateAdmin_(data.endDate);
+  var startTime = normalizeAdminTime_(data.startTime || "00:00");
+  var endTime = normalizeAdminTime_(data.endTime || "23:59");
+  var reason = cleanValue(data.reason || "");
+
+  if (!isValidJalaliDateAdmin_(startDate) || !isValidJalaliDateAdmin_(endDate)) {
+    return { ok: false, success: false, message: "تاریخ شمسی را به شکل ۱۴۰۵/۰۷/۱۵ وارد کنید." };
+  }
+
+  if (dateTimeKey(startDate, startTime) === null || dateTimeKey(endDate, endTime) === null) {
+    return { ok: false, success: false, message: "تاریخ یا ساعت تعطیلی معتبر نیست." };
+  }
+
+  if (dateTimeKey(endDate, endTime) <= dateTimeKey(startDate, startTime)) {
+    return { ok: false, success: false, message: "تاریخ/ساعت پایان باید بعد از شروع باشد." };
+  }
+
+  var ss = getBookingSpreadsheetForAdmin_();
+  var sheet = getClosureSheetForAdmin_(ss, true);
+  sheet.appendRow([startDate, startTime, endDate, endTime, "فعال", reason]);
+
+  return { ok: true, success: true, message: "تعطیلی با موفقیت ثبت شد." };
+}
+
+function toggleAdminClosure(rowNumber) {
+  var ss = getBookingSpreadsheetForAdmin_();
+  var sheet = getClosureSheetForAdmin_(ss, false);
+  if (!sheet || !rowNumber || Number(rowNumber) < 2 || Number(rowNumber) > sheet.getLastRow()) {
+    return { ok: false, success: false, message: "ردیف تعطیلی معتبر نیست." };
+  }
+
+  var cell = sheet.getRange(Number(rowNumber), 5);
+  var active = normalizeText(cell.getDisplayValue()) === normalizeText("فعال");
+  cell.setValue(active ? "غیرفعال" : "فعال");
+
+  return { ok: true, success: true, active: !active };
+}
+
+function deleteAdminClosure(rowNumber) {
+  var ss = getBookingSpreadsheetForAdmin_();
+  var sheet = getClosureSheetForAdmin_(ss, false);
+  if (!sheet || !rowNumber || Number(rowNumber) < 2 || Number(rowNumber) > sheet.getLastRow()) {
+    return { ok: false, success: false, message: "ردیف تعطیلی معتبر نیست." };
+  }
+
+  sheet.deleteRow(Number(rowNumber));
+  return { ok: true, success: true, message: "تعطیلی حذف شد." };
+}
+
+function getBookingSpreadsheetForAdmin_() {
+  var sheetId = PropertiesService.getScriptProperties().getProperty(PROP_SHEET_ID);
+  if (!sheetId) throw new Error("BOOKING_SHEET_ID پیدا نشد.");
+  return SpreadsheetApp.openById(sheetId);
+}
+
+function getClosureSheetForAdmin_(ss, createIfMissing) {
+  var sheet = getSheetByAliases(ss, ["تعطیلی ها", "تعطیلی‌ها"]);
+  if (!sheet && createIfMissing) {
+    sheet = ss.insertSheet("تعطیلی‌ها");
+    sheet.getRange(1, 1, 1, 6).setValues([["از تاریخ", "از ساعت", "تا تاریخ", "تا ساعت", "وضعیت", "دلیل"]]);
+  }
+  return sheet;
+}
+
+function normalizeJalaliDateAdmin_(value) {
+  var text = toEnglishDigits(cleanValue(value || ""));
+  text = text.replace(/[-.]/g, "/").replace(/\s+/g, "");
+  var m = text.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+  if (!m) return "";
+  return m[1] + "/" + pad2(Number(m[2])) + "/" + pad2(Number(m[3]));
+}
+
+function isValidJalaliDateAdmin_(value) {
+  var m = String(value || "").match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+  if (!m) return false;
+  var y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  if (mo > 6 && d > 30) return false;
+  return true;
+}
+
+function normalizeAdminTime_(value) {
+  var text = toEnglishDigits(cleanValue(value || ""));
+  var m = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return "";
+  var h = Number(m[1]), min = Number(m[2]);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return "";
+  return pad2(h) + ":" + pad2(min);
 }
