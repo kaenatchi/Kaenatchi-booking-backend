@@ -71,6 +71,8 @@ var TELEGRAM_WEBHOOK_URL =
 
 function doPost(e) {
 
+  console.log("[BOOKING DEBUG] doPost START");
+
   var lock = LockService.getScriptLock();
   var lockAcquired = false;
   var data = {};
@@ -81,6 +83,7 @@ function doPost(e) {
      * ابتدا اطلاعات POST را می‌خوانیم.
      */
     data = receivePostData(e);
+    console.log("[BOOKING DEBUG] POST data received; keys=" + Object.keys(data || {}).join(","));
 
 
     /* عملیات مدیریتی پنل مرکزی */
@@ -120,6 +123,8 @@ function doPost(e) {
     /* =====================================================
        اطلاعات مشتری
     ===================================================== */
+
+    console.log("[BOOKING DEBUG] basic validation stage");
 
     var firstName =
       cleanValue(
@@ -319,10 +324,14 @@ function doPost(e) {
     }
 
 
+    console.log("[BOOKING DEBUG] opening spreadsheet");
+
     var ss =
       SpreadsheetApp.openById(
         sheetId
       );
+
+    console.log("[BOOKING DEBUG] spreadsheet opened");
 
 
     var bookingSheet =
@@ -348,10 +357,14 @@ function doPost(e) {
       bookingSheet
     );
 
+    console.log("[BOOKING DEBUG] booking sheet ready");
+
 
     /* =====================================================
        وضعیت سیستم
     ===================================================== */
+
+    console.log("[BOOKING DEBUG] system status stage");
 
     var systemStatus =
       getSetting(
@@ -385,6 +398,8 @@ function doPost(e) {
     /* =====================================================
        خدمت
     ===================================================== */
+
+    console.log("[BOOKING DEBUG] service lookup stage; service=" + service);
 
     var serviceInfo =
       getServiceInfo(
@@ -467,6 +482,8 @@ function doPost(e) {
        تخفیف
     ===================================================== */
 
+    console.log("[BOOKING DEBUG] discount stage");
+
     var discountInfo =
       calculateDiscount(
         ss,
@@ -507,6 +524,8 @@ function doPost(e) {
       );
 
 
+    console.log("[BOOKING DEBUG] working-slot stage; date=" + date + "; time=" + time);
+
     /* =====================================================
        بررسی ساعات کاری
     ===================================================== */
@@ -533,6 +552,8 @@ function doPost(e) {
 
     }
 
+
+    console.log("[BOOKING DEBUG] closed-slot stage");
 
     /* =====================================================
        بررسی تعطیلی
@@ -570,12 +591,16 @@ function doPost(e) {
      * اکنون فقط بخش نهایی duplicate-check + overlap-check + appendRow
      * داخل قفل اجرا می‌شود.
      */
+    console.log("[BOOKING DEBUG] acquiring final lock");
     lock.waitLock(5000);
+    console.log("[BOOKING DEBUG] final lock acquired");
     lockAcquired = true;
 
     /* =====================================================
        جلوگیری از درخواست تکراری
     ===================================================== */
+
+    console.log("[BOOKING DEBUG] duplicate-request stage; requestId=" + clientRequestId);
 
     var existingRequest =
       findBookingByRequestId(
@@ -611,6 +636,8 @@ function doPost(e) {
     /* =====================================================
        جلوگیری از رزرو همزمان
     ===================================================== */
+
+    console.log("[BOOKING DEBUG] overlap stage; reading booking rows");
 
     var values =
       bookingSheet
@@ -717,6 +744,8 @@ function doPost(e) {
        ذخیره تصویر فیش
     ===================================================== */
 
+    console.log("[BOOKING DEBUG] receipt stage; hasImage=" + !!receiptDataUrl);
+
     var receiptInfo = {
 
       ok: true,
@@ -761,6 +790,8 @@ function doPost(e) {
     /* =====================================================
        کد پیگیری واقعی سمت سرور
     ===================================================== */
+
+    console.log("[BOOKING DEBUG] tracking-code stage");
 
     var tracking =
       createUniqueTrackingCode(
@@ -814,9 +845,13 @@ function doPost(e) {
     ];
 
 
+    console.log("[BOOKING DEBUG] ABOUT TO appendRow");
+
     bookingSheet.appendRow(
       row
     );
+
+    console.log("[BOOKING DEBUG] appendRow COMPLETED");
 
     /*
      * ثبت اتمیک تمام شد؛ قفل را همین‌جا آزاد می‌کنیم.
@@ -831,6 +866,8 @@ function doPost(e) {
     /* =====================================================
        ارسال اعلان ادمین
     ===================================================== */
+
+    console.log("[BOOKING DEBUG] row saved; starting Telegram notification outside lock");
 
     var telegramResult =
       sendBookingToTelegram({
@@ -929,6 +966,8 @@ function doPost(e) {
        نتیجه واقعی سرور
     ===================================================== */
 
+    console.log("[BOOKING DEBUG] doPost SUCCESS; tracking=" + tracking + "; requestId=" + clientRequestId);
+
     return jsonResponse({
 
       ok: true,
@@ -957,6 +996,10 @@ function doPost(e) {
 
 
   } catch (error) {
+
+    console.error(
+      "[BOOKING DEBUG] doPost ERROR: " + error.message
+    );
 
     console.error(
       "Booking error: " +
@@ -1127,6 +1170,8 @@ function doGet(e) {
     e.parameter
       ? e.parameter.action || ""
       : "";
+
+  console.log("[BOOKING DEBUG] doGet action=" + action + "; requestId=" + ((e && e.parameter && e.parameter.requestId) || ""));
 
 
   if (
