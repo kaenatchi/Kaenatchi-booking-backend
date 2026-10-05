@@ -534,6 +534,15 @@ function doPost(e) {
       )
     ) {
 
+      console.log(
+        "[BOOKING-DIAG] FAIL working-slot date=" +
+        date +
+        " time=" +
+        time +
+        " weekday=" +
+        getJalaliWeekday(date)
+      );
+
       return jsonResponse({
 
         ok: false,
@@ -560,6 +569,13 @@ function doPost(e) {
         serviceInfo.duration
       )
     ) {
+
+      console.log(
+        "[BOOKING-DIAG] FAIL closed-slot date=" +
+        date +
+        " time=" +
+        time
+      );
 
       return jsonResponse({
 
@@ -2292,8 +2308,8 @@ function isWorkingSlot(
 
 
     if (
-      normalizeText(rowDay) !==
-      normalizeText(day)
+      normalizeWeekdayText_(rowDay) !==
+      normalizeWeekdayText_(day)
     ) {
 
       continue;
@@ -3191,6 +3207,18 @@ function compareJalaliDates(
 /* =========================================================
    روز هفته شمسی
 ========================================================= */
+
+function normalizeWeekdayText_(value) {
+
+  return String(value || "")
+    .replace(/[\u200c\u200d\u200e\u200f]/g, "")
+    .replace(/[\s\u00a0]+/g, "")
+    .replace(/ي/g, "ی")
+    .replace(/ك/g, "ک")
+    .trim();
+
+}
+
 
 function getJalaliWeekday(
   jalaliDate
