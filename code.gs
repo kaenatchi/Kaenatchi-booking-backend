@@ -833,7 +833,10 @@ function doPost(e) {
           transactionId,
 
         telegramChatId:
-          telegramChatId
+          telegramChatId,
+
+        clientRequestId:
+          clientRequestId
 
       });
 
