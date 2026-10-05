@@ -1234,6 +1234,52 @@ function getBookingStatus(
   }
 
 
+  /*
+   * نتیجه خطای موقت را قبل از مراجعه به Sheet بررسی می‌کنیم.
+   */
+  try {
+
+    var cachedFailure =
+      CacheService
+        .getScriptCache()
+        .get(
+          "BOOKING_STATUS_" +
+          requestId
+        );
+
+    if (cachedFailure) {
+
+      var cachedResult =
+        JSON.parse(
+          cachedFailure
+        );
+
+      if (
+        cachedResult &&
+        cachedResult.found
+      ) {
+
+        console.log(
+          "[BOOKING DEBUG] bookingStatus cache HIT; requestId=" +
+          requestId
+        );
+
+        return cachedResult;
+
+      }
+
+    }
+
+  } catch (cacheReadError) {
+
+    console.error(
+      "[BOOKING DEBUG] status cache read error: " +
+      cacheReadError.message
+    );
+
+  }
+
+
   var sheetId =
     PropertiesService
       .getScriptProperties()
