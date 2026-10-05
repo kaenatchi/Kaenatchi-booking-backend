@@ -269,16 +269,7 @@ function doPost(e) {
       !time
     ) {
 
-      return jsonResponse({
-
-        ok: false,
-
-        success: false,
-
-        message:
-          "لطفاً همه اطلاعات نوبت را کامل وارد کنید."
-
-      });
+      return bookingFailureResponse(clientRequestId, "لطفاً همه اطلاعات نوبت را کامل وارد کنید.");
 
     }
 
@@ -289,16 +280,7 @@ function doPost(e) {
 
     if (!receiptText) {
 
-      return jsonResponse({
-
-        ok: false,
-
-        success: false,
-
-        message:
-          "لطفاً متن کامل رسید بانکی را وارد کنید."
-
-      });
+      return bookingFailureResponse(clientRequestId, "لطفاً متن کامل رسید بانکی را وارد کنید.");
 
     }
 
@@ -381,16 +363,7 @@ function doPost(e) {
       normalizeText("فعال")
     ) {
 
-      return jsonResponse({
-
-        ok: false,
-
-        success: false,
-
-        message:
-          "سامانه نوبت‌دهی در حال حاضر فعال نیست."
-
-      });
+      return bookingFailureResponse(clientRequestId, "سامانه نوبت‌دهی در حال حاضر فعال نیست.");
 
     }
 
@@ -410,32 +383,14 @@ function doPost(e) {
 
     if (!serviceInfo) {
 
-      return jsonResponse({
-
-        ok: false,
-
-        success: false,
-
-        message:
-          "خدمت انتخاب‌شده معتبر نیست."
-
-      });
+      return bookingFailureResponse(clientRequestId, "خدمت انتخاب‌شده معتبر نیست.");
 
     }
 
 
     if (!serviceInfo.active) {
 
-      return jsonResponse({
-
-        ok: false,
-
-        success: false,
-
-        message:
-          "این خدمت در حال حاضر قابل رزرو نیست."
-
-      });
+      return bookingFailureResponse(clientRequestId, "این خدمت در حال حاضر قابل رزرو نیست.");
 
     }
 
@@ -462,16 +417,7 @@ function doPost(e) {
 
       if (!consultationApproved) {
 
-        return jsonResponse({
-
-          ok: false,
-
-          success: false,
-
-          message:
-            "برای رزرو این خدمت، ابتدا باید مشاوره شما با ادمین انجام و تأیید شود."
-
-        });
+        return bookingFailureResponse(clientRequestId, "برای رزرو این خدمت، ابتدا باید مشاوره شما با ادمین انجام و تأیید شود.");
 
       }
 
@@ -498,16 +444,7 @@ function doPost(e) {
       !discountInfo.valid
     ) {
 
-      return jsonResponse({
-
-        ok: false,
-
-        success: false,
-
-        message:
-          discountInfo.message
-
-      });
+      return bookingFailureResponse(clientRequestId, discountInfo.message);
 
     }
 
@@ -539,16 +476,7 @@ function doPost(e) {
       )
     ) {
 
-      return jsonResponse({
-
-        ok: false,
-
-        success: false,
-
-        message:
-          "این تاریخ یا ساعت در برنامه کاری کائنات‌چی قرار ندارد."
-
-      });
+      return bookingFailureResponse(clientRequestId, "این تاریخ یا ساعت در برنامه کاری کائنات‌چی قرار ندارد.");
 
     }
 
@@ -568,16 +496,7 @@ function doPost(e) {
       )
     ) {
 
-      return jsonResponse({
-
-        ok: false,
-
-        success: false,
-
-        message:
-          "این ساعت به دلیل تعطیلی قابل رزرو نیست."
-
-      });
+      return bookingFailureResponse(clientRequestId, "این ساعت به دلیل تعطیلی قابل رزرو نیست.");
 
     }
 
@@ -724,16 +643,7 @@ function doPost(e) {
         )
       ) {
 
-        return jsonResponse({
-
-          ok: false,
-
-          success: false,
-
-          message:
-            "این ساعت با یک نوبت موجود تداخل دارد. لطفاً ساعت دیگری انتخاب کنید."
-
-        });
+        return bookingFailureResponse(clientRequestId, "این ساعت با یک نوبت موجود تداخل دارد. لطفاً ساعت دیگری انتخاب کنید.");
 
       }
 
@@ -771,16 +681,7 @@ function doPost(e) {
 
       if (!receiptInfo.ok) {
 
-        return jsonResponse({
-
-          ok: false,
-
-          success: false,
-
-          message:
-            "ذخیره تصویر فیش انجام نشد. لطفاً تصویر را حذف کنید یا دوباره تلاش کنید."
-
-        });
+        return bookingFailureResponse(clientRequestId, "ذخیره تصویر فیش انجام نشد. لطفاً تصویر را حذف کنید یا دوباره تلاش کنید.");
 
       }
 
@@ -1007,17 +908,8 @@ function doPost(e) {
     );
 
 
-    return jsonResponse({
-
-      ok: false,
-
-      success: false,
-
-      message:
-        "خطا در ثبت نوبت: " +
-        error.message
-
-    });
+    return bookingFailureResponse(clientRequestId, "خطا در ثبت نوبت: " +
+        error.message);
 
 
   } finally {
@@ -1029,6 +921,75 @@ function doPost(e) {
     }
 
   }
+
+}
+
+
+/* =========================================================
+   ثبت وضعیت خطای درخواست برای خروج از Loading در Mini App
+========================================================= */
+
+function bookingFailureResponse(
+  requestId,
+  message
+) {
+
+  var cleanRequestId =
+    cleanValue(
+      requestId ||
+      ""
+    );
+
+  var cleanMessage =
+    String(
+      message ||
+      "ثبت نوبت انجام نشد."
+    );
+
+  if (cleanRequestId) {
+
+    try {
+
+      CacheService
+        .getScriptCache()
+        .put(
+          "BOOKING_STATUS_" + cleanRequestId,
+          JSON.stringify({
+            ok: false,
+            found: true,
+            success: false,
+            error: true,
+            message: cleanMessage,
+            status: "خطا"
+          }),
+          21600
+        );
+
+    } catch (cacheError) {
+
+      console.error(
+        "[BOOKING DEBUG] failure cache error: " +
+        cacheError.message
+      );
+
+    }
+
+  }
+
+  console.log(
+    "[BOOKING DEBUG] FAILURE; requestId=" +
+    cleanRequestId +
+    "; message=" +
+    cleanMessage
+  );
+
+  return jsonResponse({
+    ok: false,
+    success: false,
+    error: true,
+    message: cleanMessage,
+    clientRequestId: cleanRequestId
+  });
 
 }
 
