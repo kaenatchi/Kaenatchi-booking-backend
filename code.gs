@@ -71,6 +71,8 @@ var TELEGRAM_WEBHOOK_URL =
 
 function doPost(e) {
 
+  console.log("[BOOKING-DIAG] doPost START");
+
   var lock = LockService.getScriptLock();
   var data = {};
 
@@ -81,6 +83,7 @@ function doPost(e) {
      */
     data = receivePostData(e);
 
+    console.log("[BOOKING-DIAG] POST DATA", JSON.stringify({firstName:data.firstName||"",lastName:data.lastName||"",mobile:data.mobile||"",service:data.service||"",date:data.date||"",time:data.time||"",discountCode:data.discountCode||"",hasReceiptText:!!(data.receiptText||data.bankReceiptText),hasReceiptImage:!!data.receiptDataUrl,clientRequestId:data.clientRequestId||""}));
 
     /* عملیات مدیریتی پنل مرکزی */
     if (data && data.central_admin_action) {
@@ -281,6 +284,8 @@ function doPost(e) {
 
     if (!receiptText) {
 
+      console.log("[BOOKING-DIAG] FAIL receiptText");
+
       return jsonResponse({
 
         ok: false,
@@ -358,6 +363,8 @@ function doPost(e) {
         ]
       );
 
+    console.log("[BOOKING-DIAG] checkpoint systemStatus=" + systemStatus);
+
 
     if (
       systemStatus &&
@@ -392,6 +399,8 @@ function doPost(e) {
 
     if (!serviceInfo) {
 
+      console.log("[BOOKING-DIAG] FAIL service-not-found: " + service);
+
       return jsonResponse({
 
         ok: false,
@@ -407,6 +416,8 @@ function doPost(e) {
 
 
     if (!serviceInfo.active) {
+
+      console.log("[BOOKING-DIAG] FAIL service-inactive: " + service);
 
       return jsonResponse({
 
@@ -424,6 +435,8 @@ function doPost(e) {
 
     var originalPrice =
       serviceInfo.price;
+
+    console.log("[BOOKING-DIAG] checkpoint service-ok name=" + service + " price=" + originalPrice + " duration=" + serviceInfo.duration + " requiresConsultation=" + serviceInfo.requiresConsultation);
 
 
     /* =====================================================
@@ -443,6 +456,8 @@ function doPost(e) {
 
 
       if (!consultationApproved) {
+
+        console.log("[BOOKING-DIAG] FAIL consultation-not-approved");
 
         return jsonResponse({
 
@@ -494,6 +509,8 @@ function doPost(e) {
 
     var discountAmount =
       discountInfo.discountAmount || 0;
+
+    console.log("[BOOKING-DIAG] checkpoint discount valid=" + discountInfo.valid + " amount=" + discountAmount);
 
 
     var finalPrice =
@@ -570,6 +587,8 @@ function doPost(e) {
 
 
     if (existingRequest) {
+
+      console.log("[BOOKING-DIAG] DUPLICATE requestId=" + clientRequestId);
 
       return jsonResponse({
 
@@ -702,6 +721,8 @@ function doPost(e) {
        ذخیره تصویر فیش
     ===================================================== */
 
+    console.log("[BOOKING-DIAG] checkpoint overlap-check passed");
+
     var receiptInfo = {
 
       ok: true,
@@ -726,6 +747,8 @@ function doPost(e) {
 
 
       if (!receiptInfo.ok) {
+
+        console.log("[BOOKING-DIAG] FAIL receipt-save");
 
         return jsonResponse({
 
@@ -799,9 +822,13 @@ function doPost(e) {
     ];
 
 
+    console.log("[BOOKING-DIAG] BEFORE appendRow");
+
     bookingSheet.appendRow(
       row
     );
+
+    console.log("[BOOKING-DIAG] AFTER appendRow tracking=" + tracking);
 
 
     /* =====================================================
@@ -905,6 +932,8 @@ function doPost(e) {
        نتیجه واقعی سرور
     ===================================================== */
 
+    console.log("[BOOKING-DIAG] SUCCESS returning tracking=" + tracking);
+
     return jsonResponse({
 
       ok: true,
@@ -935,7 +964,7 @@ function doPost(e) {
   } catch (error) {
 
     console.error(
-      "Booking error: " +
+      "[BOOKING-DIAG] Booking error: " +
       error.message
     );
 
