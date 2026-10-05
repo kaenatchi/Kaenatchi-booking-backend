@@ -765,94 +765,16 @@ function doPost(e) {
 
 
     /* =====================================================
-       صف اعلان Telegram
+       ثبت نوبت تمام شد — بدون هیچ کار جانبی
     ===================================================== */
 
     /*
-     * ثبت نوبت کاملاً تمام شده است.
-     *
-     * نکته مهم:
-     * اینجا دیگر مستقیماً UrlFetchApp به Telegram نمی‌زنیم.
-     * چون Mini App منتظر پایان doPost می‌ماند و یک ارتباط کند/گیرکرده
-     * با Telegram می‌تواند صفحه را روی «لودینگ» نگه دارد.
-     *
-     * اطلاعات اعلان در یک صف داخلی ذخیره می‌شود و Trigger جداگانه
-     * آن را پردازش می‌کند. بنابراین ثبت نوبت به Telegram وابسته نیست.
+     * بسیار مهم:
+     * بعد از appendRow دیگر هیچ Spreadsheet/Telegram/Queue operation
+     * داخل doPost انجام نمی‌دهیم. پاسخ ثبت نوبت باید فوراً برگردد.
+     * اعلان‌ها بعداً توسط Trigger مستقل از روی شیت پردازش می‌شوند.
      */
-    console.log("[BOOKING DEBUG] row saved; queueing Telegram notification");
-
-    try {
-
-      queueBookingNotifications_({
-
-        name:
-          firstName +
-          " " +
-          lastName,
-
-        firstName:
-          firstName,
-
-        lastName:
-          lastName,
-
-        mobile:
-          mobile,
-
-        service:
-          service,
-
-        date:
-          date,
-
-        time:
-          time,
-
-        trackingCode:
-          tracking,
-
-        originalPrice:
-          originalPrice,
-
-        discountCode:
-          discountCode,
-
-        discountAmount:
-          discountAmount,
-
-        finalPrice:
-          finalPrice,
-
-        receiptUrl:
-          receiptInfo.url,
-
-        receiptText:
-          receiptText,
-
-        transactionId:
-          transactionId,
-
-        telegramChatId:
-          telegramChatId,
-
-        clientRequestId:
-          clientRequestId
-
-      });
-
-    } catch (notificationQueueError) {
-
-      /*
-       * حتی اگر صف اعلان مشکل داشته باشد، خود رزرو نباید شکست بخورد.
-       * ردیف نوبت قبلاً با موفقیت ثبت شده است.
-       */
-      console.error(
-        "[BOOKING DEBUG] notification queue failed: " +
-        notificationQueueError.message
-      );
-
-    }
-
+    console.log("[BOOKING DEBUG] row saved; returning immediately");
 
     /* =====================================================
        نتیجه واقعی سرور
@@ -7038,260 +6960,95 @@ function queueBookingNotifications_(data) {
  */
 function processBookingNotificationQueue() {
 
-  var lock =
-    LockService.getScriptLock();
-
-  var acquired =
-    false;
+  var lock = LockService.getScriptLock();
+  var acquired = false;
 
   try {
-
     lock.waitLock(5000);
     acquired = true;
 
-    var sheetId =
-      PropertiesService
-        .getScriptProperties()
-        .getProperty(
-          PROP_SHEET_ID
-        );
+    var sheetId = PropertiesService.getScriptProperties().getProperty(PROP_SHEET_ID);
+    if (!sheetId) throw new Error("BOOKING_SHEET_ID پیدا نشد.");
 
-    if (
-      !sheetId
-    ) {
-      throw new Error(
-        "BOOKING_SHEET_ID پیدا نشد."
-      );
-    }
+    var ss = SpreadsheetApp.openById(sheetId);
+    var sheet = getSheetByAliases(ss, ["نوبت‌ها", "نوبت ها"]);
+    if (!sheet || sheet.getLastRow() < 2) return;
 
-    var ss =
-      SpreadsheetApp.openById(
-        sheetId
-      );
+    var values = sheet.getDataRange().getValues();
+    var props = PropertiesService.getScriptProperties();
+    var processed = 0;
 
-    var sheet =
-      ss.getSheetByName(
-        "صف اعلان‌ها"
-      );
+    for (var i = 1; i < values.length && processed < 10; i++) {
+      var row = values[i];
+      var trackingCode = cleanValue(row[6]);
+      var legacyStatus = cleanValue(row[8]);
+      var appointmentStatus = row.length > 16 ? cleanValue(row[16]) : "";
+      var chatId = cleanValue(row[14]);
 
-    if (
-      !sheet ||
-      sheet.getLastRow() < 2
-    ) {
-      return;
-    }
+      if (!trackingCode) continue;
+      if (!isReservedStatus(legacyStatus, appointmentStatus)) continue;
 
-    var values =
-      sheet
-        .getDataRange()
-        .getValues();
+      var adminKey = "BOOKING_NOTIFY_ADMIN_" + trackingCode;
+      var customerKey = "BOOKING_NOTIFY_CUSTOMER_" + trackingCode;
 
-    /*
-     * در هر اجرا تعداد محدودی اعلان پردازش می‌شود
-     * تا یک صف بزرگ باعث طولانی شدن Trigger نشود.
-     */
-    var processed =
-      0;
-
-    for (
-      var i = 1;
-      i < values.length &&
-      processed < 10;
-      i++
-    ) {
-
-      var row =
-        values[i];
-
-      var adminStatus =
-        cleanValue(row[1]);
-
-      var customerStatus =
-        cleanValue(row[2]);
-
-      if (
-        adminStatus !== "در انتظار" &&
-        customerStatus !== "در انتظار"
-      ) {
-        continue;
-      }
-
-      var payloadText =
-        cleanValue(row[5]);
-
-      if (
-        !payloadText
-      ) {
-        sheet
-          .getRange(i + 1, 7)
-          .setValue("اطلاعات اعلان خالی است.");
-        continue;
-      }
-
-      var data;
-
-      try {
-
-        data =
-          JSON.parse(
-            payloadText
-          );
-
-      } catch (parseError) {
-
-        sheet
-          .getRange(i + 1, 7)
-          .setValue(
-            "خطا در خواندن اطلاعات اعلان: " +
-            parseError.message
-          );
-
-        continue;
-
-      }
-
-      var errors = [];
-
-      /*
-       * اعلان ادمین
-       */
-      if (
-        adminStatus === "در انتظار"
-      ) {
-
+      // Admin notification
+      if (props.getProperty(adminKey) !== "sent") {
         try {
+          var adminResult = sendBookingToTelegram({
+            name: cleanValue(row[3]) + " " + cleanValue(row[9]),
+            firstName: cleanValue(row[3]),
+            lastName: cleanValue(row[9]),
+            mobile: cleanValue(row[4]),
+            service: cleanValue(row[5]),
+            date: cleanValue(row[1]),
+            time: normalizeSheetTime(row[2]),
+            trackingCode: trackingCode,
+            originalPrice: row[11],
+            discountCode: cleanValue(row[10]),
+            discountAmount: row[12],
+            finalPrice: row[13],
+            receiptUrl: cleanValue(row[17]),
+            receiptText: cleanValue(row[19]),
+            transactionId: cleanValue(row[20]),
+            telegramChatId: chatId,
+            clientRequestId: cleanValue(row[21])
+          });
 
-          var telegramResult =
-            sendBookingToTelegram(
-              data
-            );
-
-          if (
-            telegramResult &&
-            telegramResult.ok
-          ) {
-
-            sheet
-              .getRange(i + 1, 2)
-              .setValue("ارسال شد");
-
-          } else {
-
-            errors.push(
-              "ادمین: " +
-              (
-                telegramResult &&
-                telegramResult.error
-                  ? telegramResult.error
-                  : "ارسال ناموفق"
-              )
-            );
-
+          if (adminResult && adminResult.ok) {
+            props.setProperty(adminKey, "sent");
           }
-
         } catch (adminError) {
-
-          errors.push(
-            "ادمین: " +
-            adminError.message
-          );
-
+          console.error("[BOOKING DEBUG] admin notification failed: " + adminError.message);
         }
-
       }
 
-      /*
-       * پیام مشتری
-       */
-      if (
-        customerStatus === "در انتظار" &&
-        data.telegramChatId
-      ) {
-
+      // Customer notification
+      if (chatId && props.getProperty(customerKey) !== "sent") {
         try {
-
-          sendCustomerBookingPending(
-            data.telegramChatId,
-            {
-              trackingCode:
-                data.trackingCode,
-
-              date:
-                data.date,
-
-              time:
-                data.time,
-
-              service:
-                data.service
-
-            }
-          );
-
-          sheet
-            .getRange(i + 1, 3)
-            .setValue("ارسال شد");
-
+          sendCustomerBookingPending(chatId, {
+            trackingCode: trackingCode,
+            date: cleanValue(row[1]),
+            time: normalizeSheetTime(row[2]),
+            service: cleanValue(row[5])
+          });
+          props.setProperty(customerKey, "sent");
         } catch (customerError) {
-
-          errors.push(
-            "مشتری: " +
-            customerError.message
-          );
-
+          console.error("[BOOKING DEBUG] customer notification failed: " + customerError.message);
         }
-
-      } else if (
-        customerStatus === "در انتظار"
-      ) {
-
-        sheet
-          .getRange(i + 1, 3)
-          .setValue("نیازی نیست");
-
-      }
-
-      if (
-        errors.length
-      ) {
-
-        sheet
-          .getRange(i + 1, 7)
-          .setValue(
-            errors.join(" | ")
-          );
-
-      } else {
-
-        sheet
-          .getRange(i + 1, 7)
-          .setValue("");
-
+      } else if (!chatId && props.getProperty(customerKey) !== "sent") {
+        props.setProperty(customerKey, "sent");
       }
 
       processed++;
-
     }
 
   } catch (error) {
-
-    console.error(
-      "[BOOKING DEBUG] notification queue error: " +
-      error.message
-    );
-
+    console.error("[BOOKING DEBUG] notification worker error: " + error.message);
   } finally {
-
     if (acquired) {
-
-      try {
-        lock.releaseLock();
-      } catch (e) {}
-
+      try { lock.releaseLock(); } catch (e) {}
     }
-
   }
-
 }
 
 
