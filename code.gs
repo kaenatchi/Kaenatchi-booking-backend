@@ -7503,23 +7503,95 @@ function addAdminClosure(data) {
   var endTime = normalizeAdminTime_(data.endTime || "23:59");
   var reason = cleanValue(data.reason || "");
 
-  if (!isValidJalaliDateAdmin_(startDate) || !isValidJalaliDateAdmin_(endDate)) {
-    return { ok: false, success: false, message: "تاریخ شمسی را به شکل ۱۴۰۵/۰۷/۱۵ وارد کنید." };
+  if (
+    !isValidJalaliDateAdmin_(startDate) ||
+    !isValidJalaliDateAdmin_(endDate)
+  ) {
+    return {
+      ok: false,
+      success: false,
+      message: "تاریخ شمسی را به شکل ۱۴۰۵/۰۷/۱۵ وارد کنید."
+    };
   }
 
-  if (dateTimeKey(startDate, startTime) === null || dateTimeKey(endDate, endTime) === null) {
-    return { ok: false, success: false, message: "تاریخ یا ساعت تعطیلی معتبر نیست." };
+  if (!startTime || !endTime) {
+    return {
+      ok: false,
+      success: false,
+      message: "ساعت تعطیلی معتبر نیست."
+    };
   }
 
-  if (dateTimeKey(endDate, endTime) <= dateTimeKey(startDate, startTime)) {
-    return { ok: false, success: false, message: "تاریخ/ساعت پایان باید بعد از شروع باشد." };
+  var startKey = adminClosureDateTimeKey_(startDate, startTime);
+  var endKey = adminClosureDateTimeKey_(endDate, endTime);
+
+  if (startKey === null || endKey === null) {
+    return {
+      ok: false,
+      success: false,
+      message: "تاریخ یا ساعت تعطیلی معتبر نیست."
+    };
+  }
+
+  if (endKey <= startKey) {
+    return {
+      ok: false,
+      success: false,
+      message: "تاریخ/ساعت پایان باید بعد از شروع باشد."
+    };
   }
 
   var ss = getBookingSpreadsheetForAdmin_();
   var sheet = getClosureSheetForAdmin_(ss, true);
-  sheet.appendRow([startDate, startTime, endDate, endTime, "فعال", reason]);
 
-  return { ok: true, success: true, message: "تعطیلی با موفقیت ثبت شد." };
+  sheet.appendRow([
+    startDate,
+    startTime,
+    endDate,
+    endTime,
+    "فعال",
+    reason
+  ]);
+
+  return {
+    ok: true,
+    success: true,
+    message: "تعطیلی با موفقیت ثبت شد."
+  };
+}
+
+function adminClosureDateTimeKey_(date, time) {
+  var parts = String(date || "").split("/");
+
+  if (parts.length !== 3) return null;
+
+  var year = Number(parts[0]);
+  var month = Number(parts[1]);
+  var day = Number(parts[2]);
+
+  if (
+    !year ||
+    !month ||
+    !day ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    (month <= 6 && day > 31) ||
+    (month >= 7 && day > 30)
+  ) {
+    return null;
+  }
+
+  var dayNumber =
+    year * 4000 +
+    month * 32 +
+    day;
+
+  var minutes = timeToMinutes(time);
+
+  if (minutes === null) return null;
+
+  return dayNumber * 1440 + minutes;
 }
 
 function toggleAdminClosure(rowNumber) {
