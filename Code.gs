@@ -317,9 +317,12 @@ function createRequest_(b) {
         const requestedServiceIds = Array.isArray(b.serviceIds) ? [...new Set(b.serviceIds.map(String))].join(',') : '';
         const samePayload =
           String(old.Phone || '') === String(b.phone || '') &&
+          String(old['First Name'] || '') === String(b.firstName || '').trim() &&
+          String(old['Last Name'] || '') === String(b.lastName || '').trim() &&
           String(old['Appointment Date'] || '') === String(b.date || '') &&
           normalizeTime_(old['Appointment Time']) === normalizeTime_(b.time) &&
-          String(old['Service IDs'] || '') === requestedServiceIds;
+          String(old['Service IDs'] || '') === requestedServiceIds &&
+          String(old['Discount Code'] || '').trim().toUpperCase() === String(b.discountCode || '').trim().toUpperCase();
         if (!samePayload) fail_('IDEMPOTENCY_CONFLICT','این شناسه قبلاً برای درخواست دیگری استفاده شده است.');
         return {
           ok:true, requestId:old['Request ID'], trackingCode:old['Tracking Code'],
