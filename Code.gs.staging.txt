@@ -840,8 +840,41 @@ function withLock_(fn){const lock=LockService.getScriptLock();lock.waitLock(2000
 function active_(v){const s=String(v===undefined?'':v).trim().toLowerCase();return !s||['true','yes','1','active','فعال','روشن','بله'].includes(s);}
 function first_(o,keys){for(const k of keys)if(o[k]!==undefined&&String(o[k]).trim()!=='')return o[k];return '';}
 function num_(v){const n=Number(String(v||'').replace(/[,٬\s]/g,''));return Number.isFinite(n)?n:0;}
-function normalizeTime_(v){const s=String(v||'').trim().replace('.',':');const m=s.match(/^(\d{1,2}):(\d{1,2})$/);return m?('0'+m[1]).slice(-2)+':'+('0'+m[2]).slice(-2):'';}
-function normalizeDate_(v){const s=String(v||'').trim().replace(/-/g,'/');return /^\d{4}\/\d{1,2}\/\d{1,2}$/.test(s)?s.split('/').map((x,i)=>i?('0'+x).slice(-2):x).join('/'):s;}
+function normalizeTime_(value) {
+  // Time cells from Sheets are often Date objects (1899-12-30), not strings.
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, CORE.TZ, 'HH:mm');
+  }
+  const s = String(value || '').trim().replace('.', ':');
+  const m = s.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!m) return '';
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return '';
+  return ('0' + hour).slice(-2) + ':' + ('0' + minute).slice(-2);
+}
+function normalizeDate_(value) {
+  // Google Sheets may return a Date object even when the cell is formatted as
+  // a Jalali date. Convert that object explicitly to the app's Tehran/Jalali
+  // YYYY/MM/DD format before comparing it with requested slot dates.
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    const parts = new Intl.DateTimeFormat('en-u-ca-persian', {
+      timeZone: CORE.TZ,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(value);
+    const p = {};
+    parts.forEach(function (part) { p[part.type] = part.value; });
+    if (p.year && p.month && p.day) {
+      return p.year + '/' + ('0' + p.month).slice(-2) + '/' + ('0' + p.day).slice(-2);
+    }
+    return '';
+  }
+  const s = String(value || '').trim().replace(/-/g, '/');
+  const m = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+  return m ? m[1] + '/' + ('0' + m[2]).slice(-2) + '/' + ('0' + m[3]).slice(-2) : s;
+}
 function tomorrowJalali_(){
   const d=new Date(Date.now()+24*60*60*1000);
   const parts=new Intl.DateTimeFormat('en-u-ca-persian',{timeZone:CORE.TZ,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(d);
