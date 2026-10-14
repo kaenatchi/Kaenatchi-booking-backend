@@ -854,22 +854,16 @@ function normalizeTime_(value) {
   return ('0' + hour).slice(-2) + ':' + ('0' + minute).slice(-2);
 }
 function normalizeDate_(value) {
-  // Google Sheets may return a Date object even when the cell is formatted as
-  // a Jalali date. Convert that object explicitly to the app's Tehran/Jalali
-  // YYYY/MM/DD format before comparing it with requested slot dates.
+  // The booking sheet stores Jalali date serials that Apps Script reads as
+  // Date objects. Use the sheet's displayed value at the conflict-check call
+  // site; a Date object alone does not preserve the displayed Jalali date.
+  // For Date objects here, derive the date from its UTC components, which
+  // match the stored Jalali serial components in this staging sheet.
   if (value instanceof Date && !isNaN(value.getTime())) {
-    const parts = new Intl.DateTimeFormat('en-u-ca-persian', {
-      timeZone: CORE.TZ,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }).formatToParts(value);
-    const p = {};
-    parts.forEach(function (part) { p[part.type] = part.value; });
-    if (p.year && p.month && p.day) {
-      return p.year + '/' + ('0' + p.month).slice(-2) + '/' + ('0' + p.day).slice(-2);
-    }
-    return '';
+    const year = value.getUTCFullYear();
+    const month = value.getUTCMonth() + 1;
+    const day = value.getUTCDate();
+    return year + '/' + ('0' + month).slice(-2) + '/' + ('0' + day).slice(-2);
   }
   const s = String(value || '').trim().replace(/-/g, '/');
   const m = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
