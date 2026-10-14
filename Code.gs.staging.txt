@@ -467,8 +467,9 @@ function requestCancel_(b) {
     const ref=findBooking_(String(b.trackingCode||''),String(b.phone||''));
     if(!ref) fail_('NOT_FOUND','درخواست پیدا نشد.');
     if(ref.obj.Status!==CORE.STATUS.CONFIRMED) fail_('INVALID_STATE','درخواست لغو فقط برای نوبت قطعی قابل ثبت است.');
-    const appointmentMs = parseJalaliDateTime_(ref.obj['Appointment Date'],ref.obj['Appointment Time']);
-    if (appointmentMs-Date.now() < 8*60*60*1000) fail_('CANCELLATION_WINDOW','لغو عادی باید دست‌کم ۸ ساعت پیش از شروع نوبت درخواست شود؛ شرایط اضطراری جداگانه بررسی می‌شود.');
+    // Customer cancellation is always a request for Maya to review; no automatic
+    // cutoff or penalty is applied here. Illness/emergency can be handled as a
+    // reschedule first, with refund considered if no suitable slot exists.
     transition_(ref,CORE.STATUS.CANCEL_REQUESTED,'customer','CANCEL_REQUESTED');
     return {ok:true,status:CORE.STATUS.CANCEL_REQUESTED,message:'درخواست لغو/بازپرداخت برای بررسی مایا ثبت شد؛ خودکار لغو یا بازپرداخت نمی‌شود.'};
   });
