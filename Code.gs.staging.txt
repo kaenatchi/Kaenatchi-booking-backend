@@ -274,35 +274,55 @@ function getPublicConfig_() {
 /** Slot generation follows the approved weekly schedule; CMS closures are overlaid read-only. */
 function getSlots_(date, serviceIds, excludeRequestId) {
   const tomorrow = tomorrowJalali_();
-  if (String(date || tomorrow) !== tomorrow) return {ok:true,date:tomorrow,slots:[],message:'فقط برای فردا امکان ثبت درخواست وجود دارد.'};
-  const day=tehranTomorrowWeekday_();
-  const ids=Array.isArray(serviceIds)?[...new Set(serviceIds.map(String))]:[];
-  let schedule=scheduleForDay_(day),duration=30,serviceMode='energy';
-  if(ids.length) {
-    const catalog=getPublicConfig_().services;
-    const selected=ids.map(id=>catalog.find(s=>s.id===id));
-    if(selected.some(s=>!s)) return {ok:true,date:tomorrow,slots:[],message:'یکی از خدمات انتخاب‌شده معتبر نیست.'};
-    const isTherapy=s=>/درمان|therapy|psychotherap|روان.?درمان|شمع.?درمان/i.test((s.category||'')+' '+(s.name||''));
-    const therapy=selected.some(isTherapy),energy=selected.some(s=>!isTherapy(s));
-    if(therapy&&energy) return {ok:true,date:tomorrow,slots:[],message:'خدمات درمانی و انرژی در یک نوبت قابل ترکیب نیستند.'};
-    serviceMode=therapy?'therapy':'energy';
-    duration=selected.reduce((sum,s)=>sum+Math.max(1,num_(s.duration)||30),0);
-    if(therapy) schedule=day===4?therapySlots_():[];
+  if (String(date || tomorrow) !== tomorrow) {
+    return {ok:true,date:tomorrow,slots:[],message:'فقط برای فردا امکان ثبت درخواست وجود دارد.'};
   }
-  const closures=readClosureSet_();
-  const slots=schedule.map(time=>{
-    const key=tomorrow+'|'+time;
-    const closed=closures.dates.has(tomorrow)||closures.slots.has(key);
-    const withinHours=slotWithinServiceWindow_(day,time,duration);
-    const taken=!withinHours||slotHasConflict_(tomorrow,time,duration,excludeRequestId||'');
-    const status=closed?'BLOCKED':!withinHours?'BLOCKED':taken?'BOOKED':'AVAILABLE';
-    return {date:tomorrow,time,period:(time<'15:00'?'صبح':'عصر'),status,
+
+  const day = tehranTomorrowWeekday_();
+  const ids = Array.isArray(serviceIds) ? [...new Set(serviceIds.map(String))] : [];
+  let schedule = scheduleForDay_(day);
+  let duration = 30;
+  let serviceMode = 'energy';
+  let catalog = null;
+
+  // Fetch CMS once for the selected services; conflict checking reuses this catalog.
+  if (ids.length) {
+    catalog = getPublicConfig_().services;
+    const selected = ids.map(id => catalog.find(s => s.id === id));
+    if (selected.some(s => !s)) {
+      return {ok:true,date:tomorrow,slots:[],message:'یکی از خدمات انتخاب‌شده معتبر نیست.'};
+    }
+    const isTherapy = s => /درمان|therapy|psychotherap|روان.?درمان|شمع.?درمان/i.test((s.category||'')+' '+(s.name||''));
+    const therapy = selected.some(isTherapy);
+    const energy = selected.some(s => !isTherapy(s));
+    if (therapy && energy) {
+      return {ok:true,date:tomorrow,slots:[],message:'خدمات درمانی و انرژی در یک نوبت قابل ترکیب نیستند.'};
+    }
+    serviceMode = therapy ? 'therapy' : 'energy';
+    duration = selected.reduce((sum,s) => sum + Math.max(1,num_(s.duration)||30),0);
+    if (therapy) schedule = day === 4 ? therapySlots_() : [];
+  }
+
+  const closures = readClosureSet_();
+  // Prepare active bookings, display-formatted Jalali dates/times, and durations once.
+  const conflictContext = createSlotConflictContext_(catalog, excludeRequestId || '');
+  const slots = schedule.map(time => {
+    const key = tomorrow + '|' + time;
+    const closed = closures.dates.has(tomorrow) || closures.slots.has(key);
+    const withinHours = slotWithinServiceWindow_(day,time,duration);
+    const taken = !withinHours || slotHasConflict_(tomorrow,time,duration,excludeRequestId||'',conflictContext);
+    const status = closed ? 'BLOCKED' : !withinHours ? 'BLOCKED' : taken ? 'BOOKED' : 'AVAILABLE';
+    return {
+      date:tomorrow,
+      time,
+      period:(time<'15:00'?'صبح':'عصر'),
+      status,
       label:closed?'تعطیل':!withinHours?'مدت خدمت خارج از ساعت کاری':taken?'رزرو شده':time,
-      message:closed?'این زمان در این تاریخ قابل رزرو نیست.':!withinHours?'مدت مجموع خدمات از ساعت کاری این بازه فراتر می‌رود.':taken?'این زمان با نوبت دیگری تداخل دارد؛ زمان دیگری انتخاب کن.':''};
+      message:closed?'این زمان در این تاریخ قابل رزرو نیست.':!withinHours?'مدت مجموع خدمات از ساعت کاری این بازه فراتر می‌رود.':taken?'این زمان با نوبت دیگری تداخل دارد؛ زمان دیگری انتخاب کن.':''
+    };
   });
   return {ok:true,date:tomorrow,slots,serviceMode,durationMinutes:duration};
 }
-
 function createRequest_(b) {
   return withLock_(() => {
     expireStaleRequests_();
@@ -591,6 +611,14 @@ function runBookingCoreSelfTests() {
   test('Receipt review never auto-expires',expirationReason_(CORE.STATUS.RECEIPT_REVIEW,1000,1000,999999)==='');
   test('Confirmed booking never auto-expires',expirationReason_(CORE.STATUS.CONFIRMED,1000,1000,999999)==='');
   test('getSlots accepts optional excluded request id',getSlots_.toString().includes('excludeRequestId'));
+  test('getSlots prepares one reusable conflict context',getSlots_.toString().includes('createSlotConflictContext_')&&getSlots_.toString().includes('conflictContext'));
+  test('slot conflict evaluation does not fetch CMS or read cells per slot',!slotHasConflict_.toString().includes('getPublicConfig_')&&!slotHasConflict_.toString().includes('getRange('));
+  test('conflict context bulk-reads raw and displayed booking values',createSlotConflictContext_.toString().includes('getValues()')&&createSlotConflictContext_.toString().includes('getDisplayValues()'));
+  const syntheticConflictContext={rows:[{obj:{Status:CORE.STATUS.REQUEST_PENDING},appointmentDate:'1405/07/23',appointmentTime:'11:00',requestedDate:'',requestedTime:'',duration:30}]};
+  test('prepared conflict context detects overlapping appointment',slotHasConflict_('1405/07/23','11:15',30,'',syntheticConflictContext));
+  test('prepared conflict context allows adjacent appointment',!slotHasConflict_('1405/07/23','11:30',30,'',syntheticConflictContext));
+  const syntheticRescheduleContext={rows:[{obj:{Status:CORE.STATUS.RESCHEDULE_REQUESTED},appointmentDate:'1405/07/22',appointmentTime:'16:00',requestedDate:'1405/07/23',requestedTime:'12:00',duration:60}]};
+  test('prepared conflict context checks requested reschedule time',slotHasConflict_('1405/07/23','12:30',30,'',syntheticRescheduleContext));
   test('getSlots read path does not expire requests',!getSlots_.toString().includes('expireStaleRequests_'));
   test('availability validation does not expire requests',!isSlotAvailableFor_.toString().includes('expireStaleRequests_'));
   test('expired pending request ignored by slot read',slotReadIsExpired_({Status:CORE.STATUS.REQUEST_PENDING,'Request Expires At':new Date(1000)},1000));
@@ -716,37 +744,80 @@ function isSlotAvailableFor_(date,time,serviceIds,excludeRequestId) {
   if(closures.dates.has(date)||closures.slots.has(date+'|'+time)) return false;
   return !slotHasConflict_(date,time,duration,excludeRequestId);
 }
-function slotHasConflict_(date,time,duration,excludeRequestId) {
-  const start=minutes_(time);
-  if(start<0)return true;
-  const end=start+Math.max(1,Number(duration)||30);
-  const active=[CORE.STATUS.REQUEST_PENDING,CORE.STATUS.PAYMENT_PENDING,CORE.STATUS.RECEIPT_REVIEW,CORE.STATUS.CONFIRMED,CORE.STATUS.CANCEL_REQUESTED,CORE.STATUS.RESCHEDULE_REQUESTED,CORE.STATUS.MANAGER_RESCHEDULE_OFFERED];
-  const now=Date.now();
-  const rows=objectsWithRows_(tab_(CORE.TABS.BOOKINGS)).filter(x=>active.includes(String(x.obj.Status||''))&&!slotReadIsExpired_(x.obj,now)&&String(x.obj['Request ID']||'')!==String(excludeRequestId||''));
-  if(!rows.length)return false;
-  const catalog=getPublicConfig_().services;
-  const durationFor=row=>{
-    const ids=String(row['Service IDs']||'').split(',').filter(Boolean);
-    const services=ids.map(id=>catalog.find(s=>s.id===id)).filter(Boolean);
-    return services.length?services.reduce((sum,s)=>sum+Math.max(1,num_(s.duration)||30),0):30;
-  };
-  return rows.some(x=>{
-    const candidates=[];
-    // Compare the displayed Jalali date text, not the underlying Date serial.
-    const headers=x.sheet.getRange(1,1,1,x.sheet.getLastColumn()).getDisplayValues()[0].map(String);
-    const appointmentDateCol=headers.indexOf('Appointment Date')+1;
-    const requestedDateCol=headers.indexOf('Requested Reschedule Date')+1;
-    const appointmentTimeCol=headers.indexOf('Appointment Time')+1;
-    const requestedTimeCol=headers.indexOf('Requested Reschedule Time')+1;
-    const shownAppointmentDate=appointmentDateCol>0?x.sheet.getRange(x.row,appointmentDateCol).getDisplayValue():'';
-    const shownRequestedDate=requestedDateCol>0?x.sheet.getRange(x.row,requestedDateCol).getDisplayValue():'';
-    const shownAppointmentTime=appointmentTimeCol>0?x.sheet.getRange(x.row,appointmentTimeCol).getDisplayValue():'';
-    const shownRequestedTime=requestedTimeCol>0?x.sheet.getRange(x.row,requestedTimeCol).getDisplayValue():'';
-    if(normalizeDate_(shownAppointmentDate)===date)candidates.push(shownAppointmentTime);
-    if(String(x.obj.Status)===CORE.STATUS.RESCHEDULE_REQUESTED&&normalizeDate_(shownRequestedDate)===date)candidates.push(shownRequestedTime);
-    return candidates.some(existingTime=>{
-      const existingStart=minutes_(existingTime);
-      return existingStart>=0&&intervalsOverlap_(start,end,existingStart,existingStart+durationFor(x.obj));
+function createSlotConflictContext_(catalog, excludeRequestId) {
+  const sh = tab_(CORE.TABS.BOOKINGS);
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return {rows:[],catalog:catalog || []};
+
+  const lastColumn = sh.getLastColumn();
+  if (lastColumn < 1) return {rows:[],catalog:catalog || []};
+
+  // Read raw values and display values in two bulk reads, never cell-by-cell in a slot loop.
+  const range = sh.getRange(1,1,lastRow,lastColumn);
+  const values = range.getValues();
+  const displayed = range.getDisplayValues();
+  const headers = values[0].map(String);
+  const index = {};
+  headers.forEach((header,i) => { index[header] = i; });
+
+  const active = [
+    CORE.STATUS.REQUEST_PENDING,
+    CORE.STATUS.PAYMENT_PENDING,
+    CORE.STATUS.RECEIPT_REVIEW,
+    CORE.STATUS.CONFIRMED,
+    CORE.STATUS.CANCEL_REQUESTED,
+    CORE.STATUS.RESCHEDULE_REQUESTED,
+    CORE.STATUS.MANAGER_RESCHEDULE_OFFERED
+  ];
+  const now = Date.now();
+  const rows = [];
+
+  for (let i=1; i<values.length; i++) {
+    const raw = values[i];
+    const obj = headers.reduce((out,header,j) => { out[header] = raw[j]; return out; }, {});
+    if (!active.includes(String(obj.Status || ''))) continue;
+    if (slotReadIsExpired_(obj,now)) continue;
+    if (String(obj['Request ID'] || '') === String(excludeRequestId || '')) continue;
+
+    const shown = displayed[i];
+    rows.push({
+      obj,
+      appointmentDate: index['Appointment Date'] === undefined ? '' : normalizeDate_(shown[index['Appointment Date']]),
+      appointmentTime: index['Appointment Time'] === undefined ? '' : shown[index['Appointment Time']],
+      requestedDate: index['Requested Reschedule Date'] === undefined ? '' : normalizeDate_(shown[index['Requested Reschedule Date']]),
+      requestedTime: index['Requested Reschedule Time'] === undefined ? '' : shown[index['Requested Reschedule Time']]
+    });
+  }
+
+  let services = catalog || [];
+  if (rows.length && !services.length) services = getPublicConfig_().services;
+  const rowsWithDuration = rows.map(entry => {
+    const ids = String(entry.obj['Service IDs'] || '').split(',').filter(Boolean);
+    const matched = ids.map(id => services.find(service => service.id === id)).filter(Boolean);
+    const duration = matched.length
+      ? matched.reduce((sum,service) => sum + Math.max(1,num_(service.duration)||30),0)
+      : 30;
+    return Object.assign({},entry,{duration});
+  });
+
+  return {rows:rowsWithDuration,catalog:services};
+}
+
+function slotHasConflict_(date,time,duration,excludeRequestId,context) {
+  const start = minutes_(time);
+  if (start < 0) return true;
+  const end = start + Math.max(1,Number(duration)||30);
+  const prepared = context || createSlotConflictContext_(null,excludeRequestId || '');
+
+  return prepared.rows.some(entry => {
+    const candidates = [];
+    if (entry.appointmentDate === date) candidates.push(entry.appointmentTime);
+    if (String(entry.obj.Status) === CORE.STATUS.RESCHEDULE_REQUESTED && entry.requestedDate === date) {
+      candidates.push(entry.requestedTime);
+    }
+    return candidates.some(existingTime => {
+      const existingStart = minutes_(existingTime);
+      return existingStart >= 0 && intervalsOverlap_(start,end,existingStart,existingStart+entry.duration);
     });
   });
 }
