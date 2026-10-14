@@ -611,6 +611,9 @@ function runBookingCoreSelfTests() {
   test('Receipt review never auto-expires',expirationReason_(CORE.STATUS.RECEIPT_REVIEW,1000,1000,999999)==='');
   test('Confirmed booking never auto-expires',expirationReason_(CORE.STATUS.CONFIRMED,1000,1000,999999)==='');
   test('getSlots accepts optional excluded request id',getSlots_.toString().includes('excludeRequestId'));
+  test('getSlots prepares one reusable conflict context',getSlots_.toString().includes('createSlotConflictContext_')&&getSlots_.toString().includes('conflictContext'));
+  test('slot conflict evaluation does not fetch CMS or read cells per slot',!slotHasConflict_.toString().includes('getPublicConfig_')&&!slotHasConflict_.toString().includes('getRange('));
+  test('conflict context bulk-reads raw and displayed booking values',createSlotConflictContext_.toString().includes('getValues()')&&createSlotConflictContext_.toString().includes('getDisplayValues()'));
   test('getSlots read path does not expire requests',!getSlots_.toString().includes('expireStaleRequests_'));
   test('availability validation does not expire requests',!isSlotAvailableFor_.toString().includes('expireStaleRequests_'));
   test('expired pending request ignored by slot read',slotReadIsExpired_({Status:CORE.STATUS.REQUEST_PENDING,'Request Expires At':new Date(1000)},1000));
