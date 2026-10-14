@@ -732,8 +732,18 @@ function slotHasConflict_(date,time,duration,excludeRequestId) {
   };
   return rows.some(x=>{
     const candidates=[];
-    if(normalizeDate_(x.obj['Appointment Date'])===date)candidates.push(x.obj['Appointment Time']);
-    if(String(x.obj.Status)===CORE.STATUS.RESCHEDULE_REQUESTED&&normalizeDate_(x.obj['Requested Reschedule Date'])===date)candidates.push(x.obj['Requested Reschedule Time']);
+    // Compare the displayed Jalali date text, not the underlying Date serial.
+    const headers=x.sheet.getRange(1,1,1,x.sheet.getLastColumn()).getDisplayValues()[0].map(String);
+    const appointmentDateCol=headers.indexOf('Appointment Date')+1;
+    const requestedDateCol=headers.indexOf('Requested Reschedule Date')+1;
+    const appointmentTimeCol=headers.indexOf('Appointment Time')+1;
+    const requestedTimeCol=headers.indexOf('Requested Reschedule Time')+1;
+    const shownAppointmentDate=appointmentDateCol>0?x.sheet.getRange(x.row,appointmentDateCol).getDisplayValue():'';
+    const shownRequestedDate=requestedDateCol>0?x.sheet.getRange(x.row,requestedDateCol).getDisplayValue():'';
+    const shownAppointmentTime=appointmentTimeCol>0?x.sheet.getRange(x.row,appointmentTimeCol).getDisplayValue():'';
+    const shownRequestedTime=requestedTimeCol>0?x.sheet.getRange(x.row,requestedTimeCol).getDisplayValue():'';
+    if(normalizeDate_(shownAppointmentDate)===date)candidates.push(shownAppointmentTime);
+    if(String(x.obj.Status)===CORE.STATUS.RESCHEDULE_REQUESTED&&normalizeDate_(shownRequestedDate)===date)candidates.push(shownRequestedTime);
     return candidates.some(existingTime=>{
       const existingStart=minutes_(existingTime);
       return existingStart>=0&&intervalsOverlap_(start,end,existingStart,existingStart+durationFor(x.obj));
@@ -854,16 +864,11 @@ function normalizeTime_(value) {
   return ('0' + hour).slice(-2) + ':' + ('0' + minute).slice(-2);
 }
 function normalizeDate_(value) {
-  // The booking sheet stores Jalali date serials that Apps Script reads as
-  // Date objects. Use the sheet's displayed value at the conflict-check call
-  // site; a Date object alone does not preserve the displayed Jalali date.
-  // For Date objects here, derive the date from its UTC components, which
-  // match the stored Jalali serial components in this staging sheet.
+  // Conflict checks use displayed Jalali YYYY/MM/DD strings. A Sheets Date
+  // object can represent an underlying serial that does not match the cell's
+  // displayed text, so callers comparing bookings must read getDisplayValue().
   if (value instanceof Date && !isNaN(value.getTime())) {
-    const year = value.getUTCFullYear();
-    const month = value.getUTCMonth() + 1;
-    const day = value.getUTCDate();
-    return year + '/' + ('0' + month).slice(-2) + '/' + ('0' + day).slice(-2);
+    return Utilities.formatDate(value, CORE.TZ, 'yyyy/MM/dd');
   }
   const s = String(value || '').trim().replace(/-/g, '/');
   const m = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
