@@ -614,6 +614,11 @@ function runBookingCoreSelfTests() {
   test('getSlots prepares one reusable conflict context',getSlots_.toString().includes('createSlotConflictContext_')&&getSlots_.toString().includes('conflictContext'));
   test('slot conflict evaluation does not fetch CMS or read cells per slot',!slotHasConflict_.toString().includes('getPublicConfig_')&&!slotHasConflict_.toString().includes('getRange('));
   test('conflict context bulk-reads raw and displayed booking values',createSlotConflictContext_.toString().includes('getValues()')&&createSlotConflictContext_.toString().includes('getDisplayValues()'));
+  const syntheticConflictContext={rows:[{obj:{Status:CORE.STATUS.REQUEST_PENDING},appointmentDate:'1405/07/23',appointmentTime:'11:00',requestedDate:'',requestedTime:'',duration:30}]};
+  test('prepared conflict context detects overlapping appointment',slotHasConflict_('1405/07/23','11:15',30,'',syntheticConflictContext));
+  test('prepared conflict context allows adjacent appointment',!slotHasConflict_('1405/07/23','11:30',30,'',syntheticConflictContext));
+  const syntheticRescheduleContext={rows:[{obj:{Status:CORE.STATUS.RESCHEDULE_REQUESTED},appointmentDate:'1405/07/22',appointmentTime:'16:00',requestedDate:'1405/07/23',requestedTime:'12:00',duration:60}]};
+  test('prepared conflict context checks requested reschedule time',slotHasConflict_('1405/07/23','12:30',30,'',syntheticRescheduleContext));
   test('getSlots read path does not expire requests',!getSlots_.toString().includes('expireStaleRequests_'));
   test('availability validation does not expire requests',!isSlotAvailableFor_.toString().includes('expireStaleRequests_'));
   test('expired pending request ignored by slot read',slotReadIsExpired_({Status:CORE.STATUS.REQUEST_PENDING,'Request Expires At':new Date(1000)},1000));
