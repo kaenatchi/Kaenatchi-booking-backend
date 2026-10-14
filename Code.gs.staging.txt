@@ -50,7 +50,7 @@ function doGet(e) {
     if (action === 'health') return out_({ok:true, service:'KaenatChi Booking Core', mode:'staging-rebuild', cmsWrites:false});
     if (action === 'getConfig') return out_(getPublicConfig_());
     if (action === 'getSlots') return out_(getSlots_(p.date, String(p.serviceIds||'').split(',').filter(Boolean)));
-    if (action === 'getStatus') return out_(getStatus_(p.trackingCode, p.phone));
+    if (action === 'getStatus') return out_(getStatus_(p.trackingCode, p.phone, p.requestId));
     return out_({ok:false,error:'UNKNOWN_ACTION',message:'عملیات شناخته نشد.'});
   } catch (err) {
     console.error(err);
@@ -203,9 +203,8 @@ function getPublicConfig_() {
 
       const price = num_(rawPrice);
 
-      // Stable fallback for the current CMS row order.
-      const id = explicitId ||
-  (bookingSlug_(name) + '-' + (index + 1));
+      // Stable fallback independent of CMS row order. Duplicate IDs fail closed below.
+      const id = explicitId || bookingSlug_(name);
 
       return {
         id: id,
@@ -252,6 +251,9 @@ function getPublicConfig_() {
       };
     });
 
+  const serviceIds = mapped.map(function (s) { return s.id; });
+  if (new Set(serviceIds).size !== serviceIds.length) fail_('CMS_SERVICE_ID_DUPLICATE','شناسهٔ خدمات در CMS یکتا نیست؛ رزرو تا اصلاح شناسه‌ها غیرفعال است.');
+
   if (!mapped.length) {
     fail_(
       'CMS_SERVICES_EMPTY',
@@ -275,7 +277,6 @@ function getPublicConfig_() {
 function getSlots_(date, serviceIds, excludeRequestId) {
   const tomorrow = tomorrowJalali_();
   if (String(date || tomorrow) !== tomorrow) return {ok:true,date:tomorrow,slots:[],message:'فقط برای فردا امکان ثبت درخواست وجود دارد.'};
-  expireStaleRequests_();
   const day=tehranTomorrowWeekday_();
   const ids=Array.isArray(serviceIds)?[...new Set(serviceIds.map(String))]:[];
   let schedule=scheduleForDay_(day),duration=30,serviceMode='energy';
@@ -315,16 +316,24 @@ function createRequest_(b) {
     const time = normalizeTime_(b.time);
     if (date !== tomorrowJalali_()) fail_('DATE_NOT_ALLOWED','فقط برای فردا می‌توان درخواست ثبت کرد.');
     const ids = Array.isArray(b.serviceIds) ? [...new Set(b.serviceIds.map(String))] : [];
-    const slot = getSlots_(date, ids).slots.find(s => s.time === time);
-    if (!slot || slot.status !== 'AVAILABLE') fail_('SLOT_UNAVAILABLE','این زمان دیگر در دسترس نیست؛ زمان دیگری انتخاب کن.');
     if (!ids.length) fail_('SERVICE_REQUIRED','حداقل یک خدمت انتخاب کن.');
     const catalog = getPublicConfig_().services;
     const chosen = ids.map(id => catalog.find(s => s.id === id));
     if (chosen.some(s => !s)) fail_('INVALID_SERVICE','یکی از خدمات انتخاب‌شده معتبر نیست.');
     const subtotal = chosen.reduce((sum,s) => sum + s.price,0);
     const discount = validateDiscountReadOnly_(String(b.discountCode || ''), subtotal);
+    const suppliedRequestId = String(b.requestId || '').trim();
+    if (suppliedRequestId && !/^REQ-[A-Z0-9-]{8,64}$/i.test(suppliedRequestId)) fail_('INVALID_REQUEST_ID','شناسهٔ درخواست معتبر نیست.');
+    const requestId = suppliedRequestId || ('REQ-' + Utilities.getUuid().replace(/-/g,'').slice(0,20).toUpperCase());
+    const prior = findByRequestId_(requestId);
+    if (prior) {
+      const same = String(prior.obj.Phone)===phone && String(prior.obj['First Name'])===firstName && String(prior.obj['Last Name'])===lastName && String(prior.obj['Appointment Date'])===date && normalizeTime_(prior.obj['Appointment Time'])===time && String(prior.obj['Service IDs']).split(',').filter(Boolean).sort().join(',')===ids.slice().sort().join(',') && String(prior.obj['Discount Code']||'').trim().toUpperCase()===String(b.discountCode||'').trim().toUpperCase();
+      if (!same) fail_('REQUEST_ID_CONFLICT','این شناسه قبلاً برای درخواست دیگری استفاده شده است.');
+      return {ok:true,requestId:requestId,trackingCode:String(prior.obj['Tracking Code']||''),status:String(prior.obj.Status||''),expiresAt:prior.obj['Request Expires At'] ? new Date(prior.obj['Request Expires At']).toISOString() : null,total:Number(prior.obj.Total||0),discountAmount:Number(prior.obj['Discount Amount']||0),message:'درخواست قبلی بازیابی شد؛ درخواست تکراری ساخته نشد.'};
+    }
+    const slot = getSlots_(date, ids).slots.find(s => s.time === time);
+    if (!slot || slot.status !== 'AVAILABLE') fail_('SLOT_UNAVAILABLE','این زمان دیگر در دسترس نیست؛ زمان دیگری انتخاب کن.');
     const now = new Date();
-    const requestId = 'REQ-' + Utilities.getUuid().replace(/-/g,'').slice(0,20).toUpperCase();
     const tracking = Utilities.getUuid().replace(/-/g,'').slice(0,24).toUpperCase();
     const expires = new Date(now.getTime()+CORE.REQUEST_TTL_MS);
     const row = {
@@ -518,8 +527,11 @@ function acceptManagerReschedule_(b) {
     return {ok:true,status:ref.obj.Status,date:d,time:t,appointmentCode:ref.obj['Appointment Code'],message:'زمان جدید ثبت شد؛ پرداخت مجدد لازم نیست.'};
   });
 }
-function getStatus_(trackingCode,phone) {
-  const ref=findBooking_(String(trackingCode||''),String(phone||''));
+function getStatus_(trackingCode,phone,requestId) {
+  const cleanPhone=String(phone||'');
+  const cleanRequestId=String(requestId||'').trim();
+  const byRequestId=cleanRequestId ? findByRequestId_(cleanRequestId) : null;
+  const ref=cleanRequestId ? (byRequestId && String(byRequestId.obj.Phone)===cleanPhone ? byRequestId : null) : findBooking_(String(trackingCode||''),cleanPhone);
   if(!ref) return {ok:true,found:false,message:'درخواستی با این کد پیگیری و شماره همراه پیدا نشد.'};
   const r=ref.obj;
   return {ok:true,found:true,requestId:r['Request ID'],trackingCode:r['Tracking Code'],status:r.Status,date:r['Appointment Date'],time:r['Appointment Time'],total:r.Total,paymentDeadline:r['Payment Expires At']?new Date(r['Payment Expires At']).toISOString():null,appointmentCode:r.Status===CORE.STATUS.CONFIRMED?r['Appointment Code']:'',canResumeReceipt:r.Status===CORE.STATUS.PAYMENT_PENDING};
@@ -706,7 +718,6 @@ function isSlotAvailableFor_(date,time,serviceIds,excludeRequestId) {
   if(!slotWithinServiceWindow_(day,time,duration)) return false;
   const closures=readClosureSet_();
   if(closures.dates.has(date)||closures.slots.has(date+'|'+time)) return false;
-  expireStaleRequests_();
   return !slotHasConflict_(date,time,duration,excludeRequestId);
 }
 function slotHasConflict_(date,time,duration,excludeRequestId) {
@@ -714,7 +725,7 @@ function slotHasConflict_(date,time,duration,excludeRequestId) {
   if(start<0)return true;
   const end=start+Math.max(1,Number(duration)||30);
   const active=[CORE.STATUS.REQUEST_PENDING,CORE.STATUS.PAYMENT_PENDING,CORE.STATUS.RECEIPT_REVIEW,CORE.STATUS.CONFIRMED,CORE.STATUS.CANCEL_REQUESTED,CORE.STATUS.RESCHEDULE_REQUESTED,CORE.STATUS.MANAGER_RESCHEDULE_OFFERED];
-  const rows=objectsWithRows_(tab_(CORE.TABS.BOOKINGS)).filter(x=>active.includes(String(x.obj.Status||''))&&String(x.obj['Request ID']||'')!==String(excludeRequestId||''));
+  const rows=objectsWithRows_(tab_(CORE.TABS.BOOKINGS)).filter(x=>active.includes(String(x.obj.Status||''))&&String(x.obj['Request ID']||'')!==String(excludeRequestId||'')&&holdStillActive_(x.obj));
   if(!rows.length)return false;
   const catalog=getPublicConfig_().services;
   const durationFor=row=>{
@@ -731,6 +742,16 @@ function slotHasConflict_(date,time,duration,excludeRequestId) {
       return existingStart>=0&&intervalsOverlap_(start,end,existingStart,existingStart+durationFor(x.obj));
     });
   });
+}
+function holdStillActive_(row) {
+  const status=String(row.Status||'');
+  const field=status===CORE.STATUS.REQUEST_PENDING ? 'Request Expires At' : status===CORE.STATUS.PAYMENT_PENDING ? 'Payment Expires At' : '';
+  if(!field) return true;
+  const raw=row[field];
+  if(!raw) return true;
+  const deadline=raw instanceof Date ? raw : new Date(raw);
+  if(!Number.isFinite(deadline.getTime())) return true;
+  return deadline.getTime()>Date.now();
 }
 function intervalsOverlap_(aStart,aEnd,bStart,bEnd) {
   return Number.isFinite(aStart)&&Number.isFinite(aEnd)&&Number.isFinite(bStart)&&Number.isFinite(bEnd)&&aStart<bEnd&&bStart<aEnd;
