@@ -576,6 +576,8 @@ function runBookingCoreSelfTests() {
   test('Strict ASCII phone accepted',/^09[0-9]{9}$/.test('09371234567'));
   test('Persian digits rejected in phone',!/^09[0-9]{9}$/.test('۰۹۳۷۱۲۳۴۵۶۷'));
   test('Jalali conversion known date',JSON.stringify(jalaliToGregorian_(1405,7,16))===JSON.stringify({gy:2026,gm:10,gd:8}));
+  test('Jalali date-time parser accepts slash date',Number.isFinite(parseJalaliDateTime_('1405/07/16','11:00')));
+  test('Jalali date-time parser accepts dash date',Number.isFinite(parseJalaliDateTime_('1405-07-16','11:00')));
   test('12-hour initial review TTL',CORE.REQUEST_TTL_MS===43200000);
   test('30-minute payment TTL',CORE.PAYMENT_TTL_MS===1800000);
   test('12-hour minimum reschedule notice',CORE.RESCHEDULE_MIN_NOTICE_MS===43200000);
@@ -835,7 +837,7 @@ function tomorrowJalali_(){
   const p={};parts.forEach(x=>p[x.type]=x.value);return p.year+'/'+p.month+'/'+p.day;
 }
 function parseJalaliDateTime_(date,time){
-  const m=String(date||'').match(/^(\\d{4})[\\/-](\\d{1,2})[\\/-](\\d{1,2})$/);
+  const m=String(date||'').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
   const t=normalizeTime_(time).match(/^(\\d{2}):(\\d{2})$/);
   if(!m||!t)return NaN;
   const g=jalaliToGregorian_(Number(m[1]),Number(m[2]),Number(m[3]));
