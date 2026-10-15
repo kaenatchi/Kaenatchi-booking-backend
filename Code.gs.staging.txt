@@ -960,6 +960,74 @@ function fail_(code,message){const e=new Error(message);e.code=code;e.publicMess
 function out_(obj){return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);}
 
 
+
+/**
+ * Narrow, guarded migration for the two Telegram identity headers only.
+ * Appends missing headers to CoreBookings; never rewrites existing headers or rows.
+ * This function performs a write only after all preconditions pass.
+ */
+function addTelegramIdentityHeadersToStagingCoreBookings() {
+  const expectedSheetName = 'KaenatChi Booking Core STAGING';
+  const targetName = CORE.TABS.BOOKINGS;
+  const newHeaders = ['Telegram Chat ID', 'Telegram Username'];
+  const ss = staging_();
+
+  if (ss.getName() !== expectedSheetName) {
+    return {ok:false, changed:false, error:'WRONG_STAGING_SPREADSHEET',
+      spreadsheet:ss.getName(), expectedSpreadsheet:expectedSheetName,
+      message:'هیچ تغییری انجام نشد؛ نام فایل با محیط Staging مورد انتظار مطابقت ندارد.'};
+  }
+
+  const sh = ss.getSheetByName(targetName);
+  if (!sh) {
+    return {ok:false, changed:false, error:'COREBOOKINGS_MISSING',
+      message:'هیچ تغییری انجام نشد؛ شیت CoreBookings وجود ندارد.'};
+  }
+
+  const expected = CORE.HEADERS.CoreBookings.slice();
+  const legacyHeaders = expected.filter(h => newHeaders.indexOf(h) < 0);
+  const lastColumn = sh.getLastColumn();
+  if (!lastColumn || !sh.getLastRow()) {
+    return {ok:false, changed:false, error:'COREBOOKINGS_EMPTY',
+      message:'هیچ تغییری انجام نشد؛ شیت CoreBookings خالی است و نیاز به بررسی جداگانه دارد.'};
+  }
+
+  const current = sh.getRange(1, 1, 1, lastColumn)
+    .getDisplayValues()[0].map(v => String(v || '').trim());
+
+  // Require the existing legacy header sequence to match exactly. Permit only
+  // either or both target headers appended at the end by a prior partial run.
+  const prefixMatches = legacyHeaders.every((h, i) => current[i] === h);
+  const trailing = current.slice(legacyHeaders.length).filter(Boolean);
+  const noUnexpectedNonblank = trailing.every(h => newHeaders.indexOf(h) >= 0);
+  const noDuplicates = new Set(current.filter(Boolean)).size === current.filter(Boolean).length;
+  const targetHeadersAlreadyPresent = newHeaders.filter(h => current.indexOf(h) >= 0);
+  const targetHeadersAreTrailing = targetHeadersAlreadyPresent.every(h =>
+    current.indexOf(h) >= legacyHeaders.length
+  );
+
+  if (!prefixMatches || !noUnexpectedNonblank || !noDuplicates || !targetHeadersAreTrailing) {
+    return {ok:false, changed:false, error:'COREBOOKINGS_HEADER_GUARD_FAILED',
+      currentHeaders:current,
+      message:'هیچ تغییری انجام نشد؛ هدرهای فعلی با الگوی امن مورد انتظار تطبیق ندارند.'};
+  }
+
+  const missing = newHeaders.filter(h => current.indexOf(h) < 0);
+  if (!missing.length) {
+    return {ok:true, changed:false, spreadsheet:ss.getName(), sheet:targetName,
+      headersAdded:[], message:'هر دو هدر از قبل موجودند؛ تغییری لازم نیست.'};
+  }
+
+  // Single write: append only the missing header cells. Existing rows/columns
+  // and all other tabs remain untouched.
+  sh.getRange(1, lastColumn + 1, 1, missing.length).setValues([missing]);
+
+  return {ok:true, changed:true, spreadsheet:ss.getName(), sheet:targetName,
+    headersAdded:missing, previousLastColumn:lastColumn,
+    newLastColumn:lastColumn + missing.length,
+    message:'فقط هدرهای شناسایی تلگرام به انتهای ردیف اول CoreBookings اضافه شدند.'};
+}
+
 /**
  * Read-only preflight for an existing STAGING spreadsheet.
  * Does not create sheets, write headers, mutate Script Properties, call Telegram,
