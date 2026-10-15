@@ -237,11 +237,9 @@ function getPublicConfig_() {
         ['بله', 'فعال', 'true', 'yes', '1', 'active']
           .includes(active);
 
-      const isAggregate = [
-        'انرژیخوانی',
-        'شمعتراپی',
-        'سایکوتراپی'
-      ].includes(normalizedName);
+      // Energy reading is a category/aggregate; candle therapy and psychotherapy
+      // are actual bookable services and must remain in the catalog for grant checks.
+      const isAggregate = isAggregateServiceName_(normalizedName);
 
       const hasPrice =
         rawPrice !== undefined &&
@@ -324,6 +322,10 @@ function getPublicConfig_() {
 }
 
 /** Slot generation follows the approved weekly schedule; CMS closures are overlaid read-only. */
+function isAggregateServiceName_(normalizedName) {
+  return String(normalizedName||'') === 'انرژیخوانی';
+}
+
 function isTherapyService_(s) {
   return /درمان|تراپی|therapy|psychotherap|روان.?درمان|سایکوتراپی/i.test(String((s&&s.category||'')+' '+(s&&s.name||'')));
 }
@@ -650,6 +652,9 @@ function runBookingCoreSelfTests() {
   test('Persian candle therapy is classified as therapy',isTherapyService_({name:'شمع‌تراپی'}));
   test('Persian psychotherapy is classified as therapy',isTherapyService_({name:'سایکوتراپی'}));
   test('Energy reading is not classified as therapy',!isTherapyService_({name:'انرژی‌خوانی'}));
+  test('Energy reading aggregate is excluded from bookable services',isAggregateServiceName_('انرژیخوانی'));
+  test('Candle therapy remains bookable',!isAggregateServiceName_('شمعتراپی'));
+  test('Psychotherapy remains bookable',!isAggregateServiceName_('سایکوتراپی'));
   test('Persian therapy classification is shared by reschedule validation',isTherapyService_({name:'سایکوتراپی'}));
   test('Friday closed',scheduleForDay_(5).length===0);
   test('Regular-day last morning slot fits 30 minutes',slotWithinServiceWindow_(6,'13:00',30));
