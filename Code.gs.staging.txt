@@ -481,16 +481,17 @@ function reviewQuestionnaire_(b) {
     const priorGrant=getGrantRow_(String(row['Telegram User ID']),String(row['Service Key']));
     if(priorGrant&&String(priorGrant.obj.State)==='ACTIVE'&&String(priorGrant.obj['Submission ID'])!==id)
       fail_('ACTIVE_GRANT_EXISTS','برای همین خدمت و کاربر از قبل مجوز فعال وجود دارد.');
-    row.Status=QUESTIONNAIRE_STATUS_.APPROVED;row['Decision Note']=String(b.note||'').trim().slice(0,500);
-    row['Reviewed By']=actor;row['Reviewed At']=now;writeObject_(ref.sheet,ref.row,row);
     let grant=priorGrant&&String(priorGrant.obj['Submission ID'])===id?priorGrant.obj:null;
     if(!grant) {
       grant={'Grant ID':'GRT-'+Utilities.getUuid().replace(/-/g,'').slice(0,24).toUpperCase(),
         'Telegram User ID':String(row['Telegram User ID']),'Service Key':String(row['Service Key']),
         'Submission ID':id,'State':GRANT_STATE_.ACTIVE,'Granted By':actor,'Granted At':now,
         'Consumed At':'','Consumed Request ID':'','Revoked At':'','Revocation Reason':''};
+      // Write the grant first. A retry can find this grant by submission ID if the next write fails.
       appendObject_(tab_(CORE.TABS.GRANTS),grant);
     }
+    row.Status=QUESTIONNAIRE_STATUS_.APPROVED;row['Decision Note']=String(b.note||'').trim().slice(0,500);
+    row['Reviewed By']=actor;row['Reviewed At']=now;writeObject_(ref.sheet,ref.row,row);
     questionnaireAudit_(id,String(grant['Grant ID']),'APPROVED_GRANT_ISSUED',actor,{serviceKey:row['Service Key']});
     notifyQuestionnaireCustomer_(row,'فرم تأیید شد','مایا فرم را تأیید کرده است. مجوز فقط برای همین خدمت صادر شده؛ این به معنی قطعی‌شدن نوبت یا تأیید پرداخت نیست.');
     return {ok:true,status:row.Status,grantState:grant.State,message:'فرم تأیید شد و مجوز مخصوص همین خدمت صادر شد.'};
