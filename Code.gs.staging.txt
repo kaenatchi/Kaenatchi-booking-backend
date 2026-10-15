@@ -57,6 +57,8 @@ function doGet(e) {
     if (action === 'getConfig') return out_(getPublicConfig_());
     if (action === 'getSlots') return out_(getSlots_(p.date, String(p.serviceIds||'').split(',').filter(Boolean)));
     if (action === 'getStatus') return out_(getStatus_(p.trackingCode, p.phone, p.requestId));
+    if (action === 'getQuestionnaireStatus') return out_(getQuestionnaireStatus_({submissionId:p.submissionId,telegramInitData:p.telegramInitData}));
+    if (action === 'getBookingGrant') return out_(getBookingGrant_({serviceKey:p.serviceKey,telegramInitData:p.telegramInitData}));
     return out_({ok:false,error:'UNKNOWN_ACTION',message:'عملیات شناخته نشد.'});
   } catch (err) {
     console.error(err);
