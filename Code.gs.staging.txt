@@ -431,7 +431,7 @@ function adminDecision_(b) {
       transition_(ref,CORE.STATUS.CONFIRMED,actor,'BANK_DEPOSIT_VERIFIED');
       writeObject_(ref.sheet,ref.row,row);
       updatePaymentStatus_(id,'APPROVED',actor);
-      notifyCustomer_(row,'پرداختت تأیید شد؛ نوبت قطعی است 🎉','واریز بررسی و تأیید شد.\\nکد نوبت: '+row['Appointment Code']+'\\nزمان: '+row['Appointment Date']+' '+row['Appointment Time']+'\\nکد پیگیری: '+row['Tracking Code']);
+      notifyCustomer_(row,'پرداختت تأیید شد؛ نوبت قطعی است 🎉','واریز بررسی و تأیید شد.\nکد نوبت: '+row['Appointment Code']+'\nزمان: '+row['Appointment Date']+' '+row['Appointment Time']+'\nکد پیگیری: '+row['Tracking Code']);
       return {ok:true,status:row.Status,appointmentCode:row['Appointment Code']};
     }
     if (decision === 'rejectPayment') {
@@ -439,7 +439,7 @@ function adminDecision_(b) {
       transition_(ref,CORE.STATUS.REJECTED,actor,'PAYMENT_REJECTED');
       row['Decision At']=new Date();row['Decision By']=actor;row['Updated At']=new Date();writeObject_(ref.sheet,ref.row,row);
       updatePaymentStatus_(id,'REJECTED',actor);
-      notifyCustomer_(row,'فیش پرداخت نیاز به پیگیری دارد','فیش ارسالی تأیید نشد. لطفاً برای بررسی و هماهنگی با مایا در ارتباط باش.\\nکد پیگیری: '+row['Tracking Code']);
+      notifyCustomer_(row,'فیش پرداخت نیاز به پیگیری دارد','فیش ارسالی تأیید نشد. لطفاً برای بررسی و هماهنگی با مایا در ارتباط باش.\nکد پیگیری: '+row['Tracking Code']);
       return {ok:true,status:row.Status};
     }
     if (decision === 'approveReschedule') {
@@ -814,7 +814,7 @@ function notifyReceipt_(row,blob) {
 function notifyCustomerPaymentWindow_(row) {
   log_(row['Request ID'],'PAYMENT_WINDOW_STARTED','',CORE.STATUS.PAYMENT_PENDING,'system',{deadline:row['Payment Expires At']});
   notifyCustomer_(row,'درخواست نوبتت پذیرفته شد ❤️',
-    'درخواستت توسط مایا پذیرفته شد. از همین حالا ۳۰ دقیقه برای پرداخت و ارسال تصویر فیش فرصت داری. نوبت فقط پس از بررسی واقعی و تأیید دستی واریز قطعی می‌شود.\\nکد پیگیری: '+row['Tracking Code']+'\\nمهلت: '+new Date(row['Payment Expires At']).toISOString());
+    'درخواستت توسط مایا پذیرفته شد. از همین حالا ۳۰ دقیقه برای پرداخت و ارسال تصویر فیش فرصت داری. نوبت فقط پس از بررسی واقعی و تأیید دستی واریز قطعی می‌شود.\nکد پیگیری: '+row['Tracking Code']+'\nمهلت: '+new Date(row['Payment Expires At']).toISOString());
 }
 function notifyCustomer_(row,title,body) {
   const chatId=String(row['Telegram Chat ID']||'').trim();
@@ -822,7 +822,7 @@ function notifyCustomer_(row,title,body) {
     log_(row['Request ID'],'CUSTOMER_TELEGRAM_SKIPPED',row.Status,row.Status,'system',{reason:'NO_VERIFIED_TELEGRAM_ID'});
     return;
   }
-  const response=telegram_('sendMessage',{chat_id:chatId,text:title+'\\n'+body});
+  const response=telegram_('sendMessage',{chat_id:chatId,text:title+'\n'+body});
   if(!response || response.ok!==true) {
     log_(row['Request ID'],'CUSTOMER_TELEGRAM_FAILED',row.Status,row.Status,'system',{telegramError:response && response.description || 'NO_RESPONSE'});
   } else {
@@ -839,20 +839,20 @@ function verifyTelegramInitData_(initData) {
     raw.split('&').forEach(pair=>{
       const at=pair.indexOf('=');
       if(at<1)return;
-      const key=decodeURIComponent(pair.slice(0,at).replace(/\\+/g,' '));
-      const value=decodeURIComponent(pair.slice(at+1).replace(/\\+/g,' '));
+      const key=decodeURIComponent(pair.slice(0,at).replace(/\+/g,' '));
+      const value=decodeURIComponent(pair.slice(at+1).replace(/\+/g,' '));
       params[key]=value;
     });
     const suppliedHash=String(params.hash||'').toLowerCase();
     const authDate=Number(params.auth_date||0);
     const now=Math.floor(Date.now()/1000);
     if(!/^[a-f0-9]{64}$/.test(suppliedHash) || !authDate || authDate>now+60 || now-authDate>86400 || !params.user) return null;
-    const checkString=Object.keys(params).filter(k=>k!=='hash').sort().map(k=>k+'='+params[k]).join('\\n');
+    const checkString=Object.keys(params).filter(k=>k!=='hash').sort().map(k=>k+'='+params[k]).join('\n');
     const secretKey=Utilities.computeHmacSha256Signature(token,'WebAppData');
     const expectedHash=Utilities.computeHmacSha256Signature(checkString,secretKey).map(b=>(b<0?b+256:b).toString(16).padStart(2,'0')).join('');
     if(expectedHash!==suppliedHash) return null;
     const user=JSON.parse(params.user);
-    if(!user || user.id===undefined || user.id===null || !/^\\d+$/.test(String(user.id))) return null;
+    if(!user || user.id===undefined || user.id===null || !/^\d+$/.test(String(user.id))) return null;
     return {id:String(user.id),username:String(user.username||'')};
   } catch(err) {
     console.error('Telegram initData verification failed',err);
