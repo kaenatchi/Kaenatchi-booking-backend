@@ -565,10 +565,12 @@ function runBookingCoreSelfTests() {
   test('Sunday energy slots',JSON.stringify(scheduleForDay_(0))===JSON.stringify(['11:30','12:30','13:30','16:30','17:30','18:30']));
   test('Friday closed',scheduleForDay_(5).length===0);
   test('Regular-day last morning slot fits 30 minutes',slotWithinServiceWindow_(6,'13:00',30));
-  test('Regular-day last morning slot rejects 60 minutes',!slotWithinServiceWindow_(6,'13:00',60));
+  test('Regular-day last morning start remains allowed for longer service',slotWithinServiceWindow_(6,'13:00',60));
   test('Half-hour-day last morning slot fits 30 minutes',slotWithinServiceWindow_(0,'13:30',30));
   test('Half-hour-day last evening slot fits 30 minutes',slotWithinServiceWindow_(2,'18:30',30));
-  test('Service crossing session break rejected',!slotWithinServiceWindow_(6,'13:00',60));
+  test('Only listed start times are allowed',!slotWithinServiceWindow_(6,'13:30',30));
+  test('Thursday energy final start is allowed',slotWithinServiceWindow_(4,'13:30',30));
+  test('Thursday 14:00 is not a start time',!slotWithinServiceWindow_(4,'14:00',30));
   test('Thursday morning-only schedule',JSON.stringify(scheduleForDay_(4))===JSON.stringify(['11:30','12:30','13:30']));
   test('Thursday therapy 13:30 start can finish at 14:15',slotWithinServiceWindow_(4,'13:30',45));
   test('Thursday therapy slots match approved morning schedule',JSON.stringify(therapySlots_())===JSON.stringify(['11:30','12:30','13:30']));
