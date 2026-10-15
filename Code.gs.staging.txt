@@ -19,12 +19,18 @@ const CORE = Object.freeze({
     BOOKINGS: 'CoreBookings',
     PAYMENTS: 'CorePayments',
     LOGS: 'CoreBookingLogs',
-    CLOSURES: 'Closures'
+    CLOSURES: 'Closures',
+    QUESTIONNAIRES: 'QuestionnaireSubmissions',
+    GRANTS: 'BookingGrants',
+    WORKFLOW_AUDIT: 'QuestionnaireGrantAudit'
   },
   HEADERS: {
-    CoreBookings: ['Request ID','Tracking Code','Appointment Code','Status','First Name','Last Name','Phone','Appointment Date','Appointment Time','Service IDs','Service Names','Subtotal','Discount Code','Discount Amount','Total','Created At','Request Expires At','Payment Expires At','Receipt File ID','Receipt MIME Type','Transaction Ref','Decision At','Decision By','Reschedule From','Requested Reschedule Date','Requested Reschedule Time','Telegram Chat ID','Telegram Username','Updated At'],
+    CoreBookings: ['Request ID','Tracking Code','Appointment Code','Status','First Name','Last Name','Phone','Appointment Date','Appointment Time','Service IDs','Service Names','Subtotal','Discount Code','Discount Amount','Total','Created At','Request Expires At','Payment Expires At','Receipt File ID','Receipt MIME Type','Transaction Ref','Decision At','Decision By','Reschedule From','Requested Reschedule Date','Requested Reschedule Time','Telegram Chat ID','Telegram Username','Booking Grant ID','Updated At'],
     CorePayments: ['Payment ID','Request ID','Tracking Code','Amount','Transaction Ref','Receipt File ID','Receipt MIME Type','Status','Submitted At','Reviewed At','Reviewed By','Notes'],
-    CoreBookingLogs: ['Event ID','Request ID','Event','From Status','To Status','Actor','At','Details']
+    CoreBookingLogs: ['Event ID','Request ID','Event','From Status','To Status','Actor','At','Details'],
+    QuestionnaireSubmissions: ['Submission ID','Telegram User ID','Telegram Username','Service Key','Service Name','Topic','Answers JSON','Status','Submitted At','Reviewed By','Reviewed At','Decision Note'],
+    BookingGrants: ['Grant ID','Telegram User ID','Service Key','Submission ID','State','Granted By','Granted At','Consumed At','Consumed Request ID','Reserved Request ID','Revoked At','Revocation Reason'],
+    QuestionnaireGrantAudit: ['Event ID','Submission ID','Grant ID','Action','Actor','At','Metadata JSON']
   },
   STATUS: {
     REQUEST_PENDING: 'REQUEST_PENDING',
@@ -51,6 +57,8 @@ function doGet(e) {
     if (action === 'getConfig') return out_(getPublicConfig_());
     if (action === 'getSlots') return out_(getSlots_(p.date, String(p.serviceIds||'').split(',').filter(Boolean)));
     if (action === 'getStatus') return out_(getStatus_(p.trackingCode, p.phone, p.requestId));
+    if (action === 'getQuestionnaireStatus') return out_(getQuestionnaireStatus_({submissionId:p.submissionId,telegramInitData:p.telegramInitData}));
+    if (action === 'getBookingGrant') return out_(getBookingGrant_({serviceKey:p.serviceKey,telegramInitData:p.telegramInitData}));
     return out_({ok:false,error:'UNKNOWN_ACTION',message:'عملیات شناخته نشد.'});
   } catch (err) {
     console.error(err);
@@ -106,6 +114,11 @@ function doPost(e) {
     const body = raw ? JSON.parse(raw) : {};
     if (body && body.callback_query) return out_(handleTelegramCallback_(body.callback_query, e && e.parameter));
     const action = String(body.action || '').trim();
+    if (action === 'submitQuestionnaire') return out_(submitQuestionnaire_(body));
+    if (action === 'getQuestionnaireStatus') return out_(getQuestionnaireStatus_(body));
+    if (action === 'getBookingGrant') return out_(getBookingGrant_(body));
+    if (action === 'reviewQuestionnaire') { requireAdmin_(body.adminSecret); return out_(reviewQuestionnaire_(body)); }
+    if (action === 'revokeBookingGrant') { requireAdmin_(body.adminSecret); return out_(revokeBookingGrant_(body)); }
     if (action === 'createRequest') return out_(createRequest_(body));
     if (action === 'submitReceipt') return out_(submitReceipt_(body));
     if (action === 'adminDecision') {
@@ -355,6 +368,213 @@ function getSlots_(date, serviceIds, excludeRequestId) {
   return {ok:true,date:tomorrow,slots,serviceMode,durationMinutes:duration};
 }
 
+/**
+ * Questionnaire/grant workflow. User identity is accepted only from signed Telegram WebApp initData.
+ * All data is isolated to the staging spreadsheet; no CMS or VIP writes are performed.
+ */
+const QUESTIONNAIRE_SERVICES_ = Object.freeze({
+  'candle-therapy': {name:'شمع‌تراپی', topics:[
+    'مسائل عاطفی و رابطه‌ای','جدایی، دلتنگی و وابستگی','ترس‌ها و نگرانی‌های شخصی',
+    'اعتمادبه‌نفس و ارزشمندی خود','احساس گیر افتادن یا تکرار الگوها',
+    'هدف‌ها، تصمیم‌ها و موانع شخصی','موضوعات دیگر با توضیح آزاد'
+  ]},
+  'psychotherapy': {name:'سایکوتراپی', topics:[]}
+});
+const QUESTIONNAIRE_STATUS_ = Object.freeze({
+  SUBMITTED:'SUBMITTED', UNDER_REVIEW:'UNDER_REVIEW',
+  CONSULTATION_PENDING:'CONSULTATION_PENDING', APPROVED:'APPROVED', DECLINED:'DECLINED'
+});
+const GRANT_STATE_ = Object.freeze({ACTIVE:'ACTIVE',CONSUMED:'CONSUMED',REVOKED:'REVOKED'});
+
+function submitQuestionnaire_(b) {
+  return withLock_(() => {
+    const identity=verifyTelegramInitData_(String(b.telegramInitData||''));
+    if(!identity) fail_('TELEGRAM_IDENTITY_REQUIRED','برای ارسال فرم، مینی‌اپ را از داخل تلگرام باز کن.');
+    const serviceKey=String(b.serviceKey||'').trim();
+    const service=QUESTIONNAIRE_SERVICES_[serviceKey];
+    if(!service) fail_('INVALID_QUESTIONNAIRE_SERVICE','خدمت انتخاب‌شده برای این فرم معتبر نیست.');
+    const submissionId=String(b.submissionId||'').trim();
+    if(!/^QST-[A-Z0-9-]{8,36}$/i.test(submissionId)) fail_('INVALID_SUBMISSION_ID','شناسه فرم معتبر نیست.');
+    const topic=String(b.topic||'').trim();
+    if(serviceKey==='candle-therapy'&&!service.topics.includes(topic)) fail_('INVALID_TOPIC','یک موضوع معتبر انتخاب کن.');
+    const answers=b.answers&&typeof b.answers==='object'&&!Array.isArray(b.answers)?b.answers:{};
+    const safeAnswers={};
+    const allowed=serviceKey==='candle-therapy'
+      ? ['issue','duration','dailyImpact','pastActions','desiredChange','additional']
+      : ['topic','lifeImpact','pastActions','desiredOutcome','additional'];
+    allowed.forEach(k=>{
+      const value=String(answers[k]===undefined?'':answers[k]).trim();
+      if(value.length>3000) fail_('ANSWER_TOO_LONG','هر پاسخ باید حداکثر ۳۰۰۰ نویسه باشد.');
+      if(value) safeAnswers[k]=value;
+    });
+    const required=serviceKey==='candle-therapy'
+      ? ['issue','duration','dailyImpact','pastActions','desiredChange']
+      : ['topic','lifeImpact','pastActions','desiredOutcome'];
+    if(required.some(k=>!safeAnswers[k])) fail_('QUESTIONNAIRE_INCOMPLETE','لطفاً همه پرسش‌های اصلی فرم را تکمیل کن.');
+    const sh=tab_(CORE.TABS.QUESTIONNAIRES);
+    const existing=objectsWithRows_(sh).find(x=>String(x.obj['Submission ID'])===submissionId);
+    if(existing) {
+      if(String(existing.obj['Telegram User ID'])!==identity.id || String(existing.obj['Service Key'])!==serviceKey)
+        fail_('SUBMISSION_ID_CONFLICT','این شناسه قبلاً برای فرم دیگری ثبت شده است.');
+      return questionnairePublicResult_(existing.obj,true);
+    }
+    const now=new Date();
+    const row={
+      'Submission ID':submissionId,'Telegram User ID':identity.id,'Telegram Username':identity.username||'',
+      'Service Key':serviceKey,'Service Name':service.name,'Topic':topic,'Answers JSON':JSON.stringify(safeAnswers),
+      'Status':QUESTIONNAIRE_STATUS_.SUBMITTED,'Submitted At':now,'Reviewed By':'','Reviewed At':'','Decision Note':''
+    };
+    appendObject_(sh,row);
+    questionnaireAudit_(submissionId,'','SUBMITTED','telegram-user',{serviceKey,answerKeys:Object.keys(safeAnswers)});
+    notifyQuestionnaireAdmin_(row);
+    return questionnairePublicResult_(row,false);
+  });
+}
+
+function getQuestionnaireStatus_(b) {
+  const identity=verifyTelegramInitData_(String(b.telegramInitData||''));
+  if(!identity) fail_('TELEGRAM_IDENTITY_REQUIRED','هویت تلگرام تأیید نشد.');
+  const id=String(b.submissionId||'').trim();
+  const row=objectsWithRows_(tab_(CORE.TABS.QUESTIONNAIRES)).find(x=>String(x.obj['Submission ID'])===id);
+  if(!row||String(row.obj['Telegram User ID'])!==identity.id) fail_('NOT_FOUND','فرم پیدا نشد.');
+  return questionnairePublicResult_(row.obj,true);
+}
+function questionnairePublicResult_(row,recovered) {
+  return {ok:true,submissionId:String(row['Submission ID']),serviceKey:String(row['Service Key']),
+    serviceName:String(row['Service Name']),status:String(row.Status),
+    submittedAt:row['Submitted At']?new Date(row['Submitted At']).toISOString():null,
+    recovered:!!recovered,message:'فرم دریافت شد؛ دسترسی به رزرو فقط پس از تأیید دستی مایا فعال می‌شود.'};
+}
+
+function reviewQuestionnaire_(b) {
+  return withLock_(() => {
+    const id=String(b.submissionId||'').trim();
+    const decision=String(b.decision||'').trim();
+    const allowed=['consultation','approve','decline'];
+    if(!id||!allowed.includes(decision)) fail_('INVALID_QUESTIONNAIRE_DECISION','تصمیم فرم معتبر نیست.');
+    const ref=objectsWithRows_(tab_(CORE.TABS.QUESTIONNAIRES)).find(x=>String(x.obj['Submission ID'])===id);
+    if(!ref) fail_('NOT_FOUND','فرم پیدا نشد.');
+    const row=ref.obj;
+    if(row.Status===QUESTIONNAIRE_STATUS_.APPROVED) {
+      if(decision==='approve') {
+        const sameGrant=objectsWithRows_(tab_(CORE.TABS.GRANTS)).find(x=>String(x.obj['Submission ID'])===id);
+        return {ok:true,status:row.Status,grant:sameGrant?sameGrant.obj:null,message:'فرم قبلاً تأیید شده است.'};
+      }
+      fail_('INVALID_STATE','فرم تأییدشده را نمی‌توان با این تصمیم تغییر داد.');
+    }
+    if(row.Status===QUESTIONNAIRE_STATUS_.DECLINED) {
+      if(decision==='decline') return {ok:true,status:row.Status,message:'این فرم قبلاً رد شده است.'};
+      fail_('INVALID_STATE','فرم ردشده باید با ارسال فرم تازه بررسی شود.');
+    }
+    const now=new Date(),actor='admin';
+    if(decision==='consultation') {
+      row.Status=QUESTIONNAIRE_STATUS_.CONSULTATION_PENDING;
+      row['Decision Note']=String(b.note||'').trim().slice(0,500);
+      row['Reviewed By']=actor;row['Reviewed At']=now;
+      writeObject_(ref.sheet,ref.row,row);
+      questionnaireAudit_(id,'','CONSULTATION_PENDING',actor,{});
+      notifyQuestionnaireCustomer_(row,'نیاز به گفت‌وگو','مایا فرم را دیده و برای گفت‌وگوی اولیه با تو هماهنگ می‌کند. هنوز مجوز رزرو صادر نشده است.');
+      return {ok:true,status:row.Status,message:'برای گفت‌وگو علامت‌گذاری شد؛ مجوز رزرو صادر نشد.'};
+    }
+    if(decision==='decline') {
+      row.Status=QUESTIONNAIRE_STATUS_.DECLINED;row['Decision Note']=String(b.note||'').trim().slice(0,500);
+      row['Reviewed By']=actor;row['Reviewed At']=now;writeObject_(ref.sheet,ref.row,row);
+      questionnaireAudit_(id,'','DECLINED',actor,{});
+      notifyQuestionnaireCustomer_(row,'نتیجه بررسی فرم','در حال حاضر دسترسی رزرو برای این خدمت تأیید نشد. اگر نیاز باشد، مایا درباره ادامه مسیر با تو هماهنگ می‌کند.');
+      return {ok:true,status:row.Status,message:'فرم رد شد؛ مجوزی ساخته نشد.'};
+    }
+    const priorGrant=getGrantRow_(String(row['Telegram User ID']),String(row['Service Key']));
+    if(priorGrant&&String(priorGrant.obj.State)==='ACTIVE'&&String(priorGrant.obj['Submission ID'])!==id)
+      fail_('ACTIVE_GRANT_EXISTS','برای همین خدمت و کاربر از قبل مجوز فعال وجود دارد.');
+    let grant=priorGrant&&String(priorGrant.obj['Submission ID'])===id?priorGrant.obj:null;
+    if(!grant) {
+      grant={'Grant ID':'GRT-'+Utilities.getUuid().replace(/-/g,'').slice(0,24).toUpperCase(),
+        'Telegram User ID':String(row['Telegram User ID']),'Service Key':String(row['Service Key']),
+        'Submission ID':id,'State':GRANT_STATE_.ACTIVE,'Granted By':actor,'Granted At':now,
+        'Consumed At':'','Consumed Request ID':'','Reserved Request ID':'','Revoked At':'','Revocation Reason':''};
+      // Write the grant first. A retry can find this grant by submission ID if the next write fails.
+      appendObject_(tab_(CORE.TABS.GRANTS),grant);
+    }
+    row.Status=QUESTIONNAIRE_STATUS_.APPROVED;row['Decision Note']=String(b.note||'').trim().slice(0,500);
+    row['Reviewed By']=actor;row['Reviewed At']=now;writeObject_(ref.sheet,ref.row,row);
+    questionnaireAudit_(id,String(grant['Grant ID']),'APPROVED_GRANT_ISSUED',actor,{serviceKey:row['Service Key']});
+    notifyQuestionnaireCustomer_(row,'فرم تأیید شد','مایا فرم را تأیید کرده است. مجوز فقط برای همین خدمت صادر شده؛ این به معنی قطعی‌شدن نوبت یا تأیید پرداخت نیست.');
+    return {ok:true,status:row.Status,grantState:grant.State,message:'فرم تأیید شد و مجوز مخصوص همین خدمت صادر شد.'};
+  });
+}
+
+function getBookingGrant_(b) {
+  const identity=verifyTelegramInitData_(String(b.telegramInitData||''));
+  if(!identity) fail_('TELEGRAM_IDENTITY_REQUIRED','هویت تلگرام تأیید نشد.');
+  const serviceKey=String(b.serviceKey||'').trim();
+  if(!QUESTIONNAIRE_SERVICES_[serviceKey]) fail_('INVALID_QUESTIONNAIRE_SERVICE','خدمت معتبر نیست.');
+  const ref=getGrantRow_(identity.id,serviceKey);
+  return {ok:true,serviceKey,state:ref?String(ref.obj.State):'NONE',
+    grantId:ref?String(ref.obj['Grant ID']):'',message:'وضعیت مجوز فقط برای حساب و خدمت تأییدشده برگردانده شد.'};
+}
+function getGrantRow_(userId,serviceKey) {
+  const rows=objectsWithRows_(tab_(CORE.TABS.GRANTS)).filter(x=>
+    String(x.obj['Telegram User ID'])===String(userId)&&
+    String(x.obj['Service Key'])===String(serviceKey)&&
+    String(x.obj.State)!==GRANT_STATE_.REVOKED
+  );
+  // Prefer an active grant over older consumed grants if the user completed a new approval cycle.
+  return rows.find(x=>String(x.obj.State)===GRANT_STATE_.ACTIVE)||rows[rows.length-1]||null;
+}
+function revokeBookingGrant_(b) {
+  return withLock_(() => {
+    const grantId=String(b.grantId||'').trim();
+    const ref=objectsWithRows_(tab_(CORE.TABS.GRANTS)).find(x=>String(x.obj['Grant ID'])===grantId);
+    if(!ref) fail_('NOT_FOUND','مجوز پیدا نشد.');
+    if(String(ref.obj.State)!==GRANT_STATE_.ACTIVE) fail_('INVALID_STATE','فقط مجوز فعال و مصرف‌نشده قابل لغو است.');
+    const now=new Date();ref.obj.State=GRANT_STATE_.REVOKED;ref.obj['Revoked At']=now;
+    ref.obj['Revocation Reason']=String(b.reason||'').trim().slice(0,500);
+    writeObject_(ref.sheet,ref.row,ref.obj);
+    questionnaireAudit_(String(ref.obj['Submission ID']),grantId,'GRANT_REVOKED','admin',{reasonProvided:!!ref.obj['Revocation Reason']});
+    return {ok:true,state:ref.obj.State,message:'مجوز فعال لغو شد و رویداد در سابقه ثبت شد.'};
+  });
+}
+function questionnaireAudit_(submissionId,grantId,action,actor,metadata) {
+  appendObject_(tab_(CORE.TABS.WORKFLOW_AUDIT),{
+    'Event ID':'QGA-'+Utilities.getUuid().replace(/-/g,'').slice(0,24).toUpperCase(),
+    'Submission ID':submissionId||'','Grant ID':grantId||'','Action':action,'Actor':actor||'system',
+    'At':new Date(),'Metadata JSON':JSON.stringify(metadata||{})
+  });
+}
+function notifyQuestionnaireAdmin_(row) {
+  const chat=prop_(CORE.ADMIN_CHAT_PROP);
+  if(!chat) return;
+  let answers={};try{answers=JSON.parse(String(row['Answers JSON']||'{}'));}catch(_){}
+  const text='فرم جدید برای بررسی مایا\nشناسه: '+row['Submission ID']+'\nخدمت: '+row['Service Name']+
+    (row.Topic?'\nموضوع: '+row.Topic:'')+'\n\n'+Object.keys(answers).map(k=>k+': '+answers[k]).join('\n')+
+    '\n\nتأیید فقط مجوز همین خدمت را صادر می‌کند؛ نوبت یا پرداخت را تأیید نمی‌کند.';
+  const buttons=[[{text:'نیاز به گفت‌وگو',callback_data:'qreview:consultation:'+row['Submission ID']}],
+    [{text:'تأیید مجوز رزرو',callback_data:'qreview:approve:'+row['Submission ID']},{text:'رد فرم',callback_data:'qreview:decline:'+row['Submission ID']}]];
+  telegram_('sendMessage',{chat_id:chat,text,reply_markup:{inline_keyboard:buttons}});
+}
+function notifyQuestionnaireCustomer_(row,title,message) {
+  const chat=String(row['Telegram User ID']||'');
+  if(!chat) return;
+  telegram_('sendMessage',{chat_id:chat,text:title+'\n'+message+'\nشناسه فرم: '+row['Submission ID']});
+}
+function handleQuestionnaireCallback_(q,params) {
+  const supplied=String((params||{}).telegram_webhook||''),expected=prop_(CORE.WEBHOOK_SECRET_PROP);
+  if(!expected||supplied!==expected) return {ok:false,error:'UNAUTHORIZED'};
+  const adminChat=prop_(CORE.ADMIN_CHAT_PROP);
+  const sender=String(q&&q.from&&q.from.id||''),chat=String(q&&q.message&&q.message.chat&&q.message.chat.id||'');
+  if(!adminChat||sender!==adminChat||chat!==adminChat) return {ok:false,error:'UNAUTHORIZED',message:'فقط مدیر مجاز به بررسی فرم است.'};
+  const parts=String(q.data||'').split(':');
+  if(parts.length!==3||parts[0]!=='qreview') return {ok:false,error:'INVALID_CALLBACK'};
+  try {
+    const result=reviewQuestionnaire_({submissionId:parts[2],decision:parts[1]});
+    telegram_('answerCallbackQuery',{callback_query_id:q.id,text:'ثبت شد'});
+    return result;
+  } catch(err) {
+    telegram_('answerCallbackQuery',{callback_query_id:q.id,text:err.publicMessage||'انجام نشد'});
+    throw err;
+  }
+}
+
 function createRequest_(b) {
   return withLock_(() => {
     const firstName = String(b.firstName || '').trim();
@@ -372,6 +592,9 @@ function createRequest_(b) {
     if (chosen.some(s => !s)) fail_('INVALID_SERVICE','یکی از خدمات انتخاب‌شده معتبر نیست.');
     const subtotal = chosen.reduce((sum,s) => sum + s.price,0);
     const telegramIdentity = verifyTelegramInitData_(String(b.telegramInitData || ''));
+    const grantServiceKey = questionnaireServiceKeyForBooking_(chosen);
+    if (grantServiceKey && !telegramIdentity) fail_('TELEGRAM_IDENTITY_REQUIRED','برای رزرو این خدمت باید از داخل تلگرام وارد شده باشی.');
+    if (grantServiceKey && chosen.length !== 1) fail_('SERVICE_GRANT_SCOPE','مجوز درمانی فقط برای همان خدمت به‌تنهایی قابل استفاده است.');
     const discount = validateDiscountReadOnly_(String(b.discountCode || ''), subtotal);
     const suppliedRequestId = String(b.requestId || '').trim();
     if (suppliedRequestId && !/^REQ-[A-Z0-9-]{8,64}$/i.test(suppliedRequestId)) fail_('INVALID_REQUEST_ID','شناسهٔ درخواست معتبر نیست.');
@@ -380,12 +603,20 @@ function createRequest_(b) {
     if (prior) {
       const same = String(prior.obj.Phone)===phone && String(prior.obj['First Name'])===firstName && String(prior.obj['Last Name'])===lastName && String(prior.obj['Appointment Date'])===date && normalizeTime_(prior.obj['Appointment Time'])===time && String(prior.obj['Service IDs']).split(',').filter(Boolean).sort().join(',')===ids.slice().sort().join(',') && String(prior.obj['Discount Code']||'').trim().toUpperCase()===String(b.discountCode||'').trim().toUpperCase();
       if (!same) fail_('REQUEST_ID_CONFLICT','این شناسه قبلاً برای درخواست دیگری استفاده شده است.');
+      if (grantServiceKey) {
+        if (!telegramIdentity || String(prior.obj['Telegram Chat ID']||'')!==telegramIdentity.id) fail_('REQUEST_OWNER_MISMATCH','این درخواست به حساب تلگرام دیگری تعلق دارد.');
+        const priorGrantId=String(prior.obj['Booking Grant ID']||'');
+        if(!priorGrantId) fail_('REQUEST_GRANT_MISMATCH','این درخواست با مجوز قابل بازیابی مرتبط نیست.');
+        finalizeGrantForRequest_(telegramIdentity.id,grantServiceKey,requestId,priorGrantId);
+      }
       return {ok:true,requestId:requestId,trackingCode:String(prior.obj['Tracking Code']||''),status:String(prior.obj.Status||''),expiresAt:prior.obj['Request Expires At'] ? new Date(prior.obj['Request Expires At']).toISOString() : null,total:Number(prior.obj.Total||0),discountAmount:Number(prior.obj['Discount Amount']||0),message:'درخواست قبلی بازیابی شد؛ درخواست تکراری ساخته نشد.'};
     }
     const slot = getSlots_(date, ids).slots.find(s => s.time === time);
     if (!slot || slot.status !== 'AVAILABLE') fail_('SLOT_UNAVAILABLE','این زمان دیگر در دسترس نیست؛ زمان دیگری انتخاب کن.');
     const now = new Date();
     const tracking = Utilities.getUuid().replace(/-/g,'').slice(0,24).toUpperCase();
+    let reservedGrant=null;
+    if (grantServiceKey) reservedGrant=reserveGrantForRequest_(telegramIdentity.id,grantServiceKey,requestId);
     const expires = new Date(now.getTime()+CORE.REQUEST_TTL_MS);
     const row = {
       'Request ID':requestId,'Tracking Code':tracking,'Appointment Code':'','Status':CORE.STATUS.REQUEST_PENDING,
@@ -396,15 +627,74 @@ function createRequest_(b) {
       'Transaction Ref':'','Decision At':'','Decision By':'','Reschedule From':'',
       'Telegram Chat ID':telegramIdentity ? String(telegramIdentity.id) : '',
       'Telegram Username':telegramIdentity ? String(telegramIdentity.username || '') : '',
+      'Booking Grant ID':reservedGrant ? String(reservedGrant.obj['Grant ID']) : '',
       'Updated At':now
     };
-    appendObject_(tab_(CORE.TABS.BOOKINGS),row);
+    let bookingWritten=false;
+    try {
+      appendObject_(tab_(CORE.TABS.BOOKINGS),row);
+      bookingWritten=true;
+      if (reservedGrant) consumeReservedGrant_(reservedGrant,requestId);
+    } catch (err) {
+      // Keep a reservation if the booking row was written but grant finalization failed;
+      // an exact retry can finish consumption, while a different request remains blocked.
+      if (reservedGrant && !bookingWritten) releaseGrantReservation_(reservedGrant,requestId);
+      throw err;
+    }
     log_(requestId,'REQUEST_CREATED','',CORE.STATUS.REQUEST_PENDING,'customer',{date,time,services:ids,total:row.Total});
     notifyAdmin_(requestId,'درخواست نوبت جدید',row);
     return {ok:true,requestId,trackingCode:tracking,status:CORE.STATUS.REQUEST_PENDING,expiresAt:expires.toISOString(),total:row.Total,discountAmount:discount.amount,message:'درخواست ثبت شد؛ نوبت هنوز قطعی نیست و تا پذیرش، پرداختی لازم نیست.'};
   });
 }
 
+function questionnaireServiceKeyForBooking_(chosen) {
+  const names=chosen.map(s=>String((s.name||'')+' '+(s.category||'')).replace(/[\u200c\u200f\u200e\s_-]+/g,'').toLocaleLowerCase('fa'));
+  const candle=names.some(name=>/شمع.?تراپی|candletherapy/.test(name));
+  const psychotherapy=names.some(name=>/سایکوتراپی|روان.?درمانی|psychotherapy/.test(name));
+  if(!candle&&!psychotherapy) return '';
+  // Never let a therapy service bypass its grant by being bundled with another service.
+  if(names.length!==1 || (candle&&psychotherapy)) fail_('SERVICE_GRANT_SCOPE','این خدمت فقط به‌تنهایی و با مجوز اختصاصی قابل رزرو است.');
+  return candle?'candle-therapy':'psychotherapy';
+}
+function reserveGrantForRequest_(userId,serviceKey,requestId) {
+  const ref=getGrantRow_(userId,serviceKey);
+  if(!ref || String(ref.obj.State)!==GRANT_STATE_.ACTIVE) fail_('BOOKING_GRANT_REQUIRED','برای این خدمت هنوز مجوز فعال مایا وجود ندارد.');
+  const reserved=String(ref.obj['Reserved Request ID']||'');
+  if(reserved && reserved!==requestId) fail_('BOOKING_GRANT_RESERVED','مجوز برای درخواست دیگری در حال استفاده است؛ همان درخواست را بازیابی کن.');
+  ref.obj['Reserved Request ID']=requestId;
+  writeObject_(ref.sheet,ref.row,ref.obj);
+  return ref;
+}
+function consumeReservedGrant_(ref,requestId) {
+  if(!ref || String(ref.obj['Reserved Request ID']||'')!==requestId) fail_('BOOKING_GRANT_RESERVATION_LOST','رزرو مجوز قابل تأیید نیست.');
+  ref.obj.State=GRANT_STATE_.CONSUMED;ref.obj['Consumed At']=new Date();
+  ref.obj['Consumed Request ID']=requestId;ref.obj['Reserved Request ID']='';
+  writeObject_(ref.sheet,ref.row,ref.obj);
+  questionnaireAudit_(String(ref.obj['Submission ID']),String(ref.obj['Grant ID']),'GRANT_CONSUMED',requestId,{requestId});
+}
+function releaseGrantReservation_(ref,requestId) {
+  if(!ref || String(ref.obj['Reserved Request ID']||'')!==requestId) return;
+  ref.obj['Reserved Request ID']='';
+  writeObject_(ref.sheet,ref.row,ref.obj);
+}
+function finalizeGrantForRequest_(userId,serviceKey,requestId,grantId) {
+  const rows=objectsWithRows_(tab_(CORE.TABS.GRANTS)).filter(x=>
+    String(x.obj['Grant ID'])===String(grantId)&&
+    String(x.obj['Telegram User ID'])===String(userId)&&String(x.obj['Service Key'])===String(serviceKey));
+  const consumed=rows.find(x=>String(x.obj.State)===GRANT_STATE_.CONSUMED&&String(x.obj['Consumed Request ID'])===requestId);
+  if(consumed) return consumed;
+  const reserved=rows.find(x=>String(x.obj.State)===GRANT_STATE_.ACTIVE&&String(x.obj['Reserved Request ID']||'')===requestId);
+  if(reserved) { consumeReservedGrant_(reserved,requestId); return reserved; }
+  const active=rows.find(x=>String(x.obj.State)===GRANT_STATE_.ACTIVE&&!String(x.obj['Reserved Request ID']||''));
+  if(active) {
+    // Recovery path: the exact booking row already exists, but its grant was not finalized.
+    active.obj['Reserved Request ID']=requestId;
+    writeObject_(active.sheet,active.row,active.obj);
+    consumeReservedGrant_(active,requestId);
+    return active;
+  }
+  fail_('BOOKING_GRANT_ALREADY_USED','مجوز این خدمت قبلاً مصرف شده یا قابل استفاده نیست.');
+}
 function submitReceipt_(b) {
   return withLock_(() => {
     const rowRef = findBooking_(String(b.trackingCode||''),String(b.phone||''));
@@ -923,6 +1213,7 @@ function telegramPhoto_(token,chat,blob,caption,id) {
   UrlFetchApp.fetch('https://api.telegram.org/bot'+token+'/sendPhoto',{method:'post',payload,muteHttpExceptions:true});
 }
 function handleTelegramCallback_(q, params) {
+  if(String(q&&q.data||'').indexOf('qreview:')===0) return handleQuestionnaireCallback_(q,params);
   const supplied=String((params||{}).telegram_webhook||'');
   const expected=prop_(CORE.WEBHOOK_SECRET_PROP);
   if(!expected || supplied!==expected) return {ok:false,error:'UNAUTHORIZED',message:'Telegram callback secret mismatch.'};
