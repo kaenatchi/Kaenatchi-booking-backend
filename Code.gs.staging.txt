@@ -29,7 +29,7 @@ const CORE = Object.freeze({
     CorePayments: ['Payment ID','Request ID','Tracking Code','Amount','Transaction Ref','Receipt File ID','Receipt MIME Type','Status','Submitted At','Reviewed At','Reviewed By','Notes'],
     CoreBookingLogs: ['Event ID','Request ID','Event','From Status','To Status','Actor','At','Details'],
     QuestionnaireSubmissions: ['Submission ID','Telegram User ID','Telegram Username','Service Key','Service Name','Topic','Answers JSON','Status','Submitted At','Reviewed By','Reviewed At','Decision Note'],
-    BookingGrants: ['Grant ID','Telegram User ID','Service Key','Submission ID','State','Granted By','Granted At','Consumed At','Consumed Request ID','Revoked At','Revocation Reason'],
+    BookingGrants: ['Grant ID','Telegram User ID','Service Key','Submission ID','State','Granted By','Granted At','Consumed At','Consumed Request ID','Reserved Request ID','Revoked At','Revocation Reason'],
     QuestionnaireGrantAudit: ['Event ID','Submission ID','Grant ID','Action','Actor','At','Metadata JSON']
   },
   STATUS: {
@@ -489,7 +489,7 @@ function reviewQuestionnaire_(b) {
       grant={'Grant ID':'GRT-'+Utilities.getUuid().replace(/-/g,'').slice(0,24).toUpperCase(),
         'Telegram User ID':String(row['Telegram User ID']),'Service Key':String(row['Service Key']),
         'Submission ID':id,'State':GRANT_STATE_.ACTIVE,'Granted By':actor,'Granted At':now,
-        'Consumed At':'','Consumed Request ID':'','Revoked At':'','Revocation Reason':''};
+        'Consumed At':'','Consumed Request ID':'','Reserved Request ID':'','Revoked At':'','Revocation Reason':''};
       // Write the grant first. A retry can find this grant by submission ID if the next write fails.
       appendObject_(tab_(CORE.TABS.GRANTS),grant);
     }
@@ -590,6 +590,9 @@ function createRequest_(b) {
     if (chosen.some(s => !s)) fail_('INVALID_SERVICE','یکی از خدمات انتخاب‌شده معتبر نیست.');
     const subtotal = chosen.reduce((sum,s) => sum + s.price,0);
     const telegramIdentity = verifyTelegramInitData_(String(b.telegramInitData || ''));
+    const grantServiceKey = questionnaireServiceKeyForBooking_(chosen);
+    if (grantServiceKey && !telegramIdentity) fail_('TELEGRAM_IDENTITY_REQUIRED','برای رزرو این خدمت باید از داخل تلگرام وارد شده باشی.');
+    if (grantServiceKey && chosen.length !== 1) fail_('SERVICE_GRANT_SCOPE','مجوز درمانی فقط برای همان خدمت به‌تنهایی قابل استفاده است.');
     const discount = validateDiscountReadOnly_(String(b.discountCode || ''), subtotal);
     const suppliedRequestId = String(b.requestId || '').trim();
     if (suppliedRequestId && !/^REQ-[A-Z0-9-]{8,64}$/i.test(suppliedRequestId)) fail_('INVALID_REQUEST_ID','شناسهٔ درخواست معتبر نیست.');
@@ -598,6 +601,10 @@ function createRequest_(b) {
     if (prior) {
       const same = String(prior.obj.Phone)===phone && String(prior.obj['First Name'])===firstName && String(prior.obj['Last Name'])===lastName && String(prior.obj['Appointment Date'])===date && normalizeTime_(prior.obj['Appointment Time'])===time && String(prior.obj['Service IDs']).split(',').filter(Boolean).sort().join(',')===ids.slice().sort().join(',') && String(prior.obj['Discount Code']||'').trim().toUpperCase()===String(b.discountCode||'').trim().toUpperCase();
       if (!same) fail_('REQUEST_ID_CONFLICT','این شناسه قبلاً برای درخواست دیگری استفاده شده است.');
+      if (grantServiceKey) {
+        if (!telegramIdentity || String(prior.obj['Telegram Chat ID']||'')!==telegramIdentity.id) fail_('REQUEST_OWNER_MISMATCH','این درخواست به حساب تلگرام دیگری تعلق دارد.');
+        finalizeGrantForRequest_(telegramIdentity.id,grantServiceKey,requestId);
+      }
       return {ok:true,requestId:requestId,trackingCode:String(prior.obj['Tracking Code']||''),status:String(prior.obj.Status||''),expiresAt:prior.obj['Request Expires At'] ? new Date(prior.obj['Request Expires At']).toISOString() : null,total:Number(prior.obj.Total||0),discountAmount:Number(prior.obj['Discount Amount']||0),message:'درخواست قبلی بازیابی شد؛ درخواست تکراری ساخته نشد.'};
     }
     const slot = getSlots_(date, ids).slots.find(s => s.time === time);
@@ -616,13 +623,70 @@ function createRequest_(b) {
       'Telegram Username':telegramIdentity ? String(telegramIdentity.username || '') : '',
       'Updated At':now
     };
-    appendObject_(tab_(CORE.TABS.BOOKINGS),row);
+    let reservedGrant=null;
+    if (grantServiceKey) reservedGrant=reserveGrantForRequest_(telegramIdentity.id,grantServiceKey,requestId);
+    let bookingWritten=false;
+    try {
+      appendObject_(tab_(CORE.TABS.BOOKINGS),row);
+      bookingWritten=true;
+      if (reservedGrant) consumeReservedGrant_(reservedGrant,requestId);
+    } catch (err) {
+      // Keep a reservation if the booking row was written but grant finalization failed;
+      // an exact retry can finish consumption, while a different request remains blocked.
+      if (reservedGrant && !bookingWritten) releaseGrantReservation_(reservedGrant,requestId);
+      throw err;
+    }
     log_(requestId,'REQUEST_CREATED','',CORE.STATUS.REQUEST_PENDING,'customer',{date,time,services:ids,total:row.Total});
     notifyAdmin_(requestId,'درخواست نوبت جدید',row);
     return {ok:true,requestId,trackingCode:tracking,status:CORE.STATUS.REQUEST_PENDING,expiresAt:expires.toISOString(),total:row.Total,discountAmount:discount.amount,message:'درخواست ثبت شد؛ نوبت هنوز قطعی نیست و تا پذیرش، پرداختی لازم نیست.'};
   });
 }
 
+function questionnaireServiceKeyForBooking_(chosen) {
+  const names=chosen.map(s=>String((s.name||'')+' '+(s.category||'')).replace(/[\\u200c\\u200f\\u200e\\s_-]+/g,'').toLocaleLowerCase('fa'));
+  if(names.length!==1) return '';
+  if(/شمع.?تراپی|candletherapy/.test(names[0])) return 'candle-therapy';
+  if(/سایکوتراپی|روان.?درمانی|psychotherapy/.test(names[0])) return 'psychotherapy';
+  return '';
+}
+function reserveGrantForRequest_(userId,serviceKey,requestId) {
+  const ref=getGrantRow_(userId,serviceKey);
+  if(!ref || String(ref.obj.State)!==GRANT_STATE_.ACTIVE) fail_('BOOKING_GRANT_REQUIRED','برای این خدمت هنوز مجوز فعال مایا وجود ندارد.');
+  const reserved=String(ref.obj['Reserved Request ID']||'');
+  if(reserved && reserved!==requestId) fail_('BOOKING_GRANT_RESERVED','مجوز برای درخواست دیگری در حال استفاده است؛ همان درخواست را بازیابی کن.');
+  ref.obj['Reserved Request ID']=requestId;
+  writeObject_(ref.sheet,ref.row,ref.obj);
+  return ref;
+}
+function consumeReservedGrant_(ref,requestId) {
+  if(!ref || String(ref.obj['Reserved Request ID']||'')!==requestId) fail_('BOOKING_GRANT_RESERVATION_LOST','رزرو مجوز قابل تأیید نیست.');
+  ref.obj.State=GRANT_STATE_.CONSUMED;ref.obj['Consumed At']=new Date();
+  ref.obj['Consumed Request ID']=requestId;ref.obj['Reserved Request ID']='';
+  writeObject_(ref.sheet,ref.row,ref.obj);
+  questionnaireAudit_(String(ref.obj['Submission ID']),String(ref.obj['Grant ID']),'GRANT_CONSUMED',requestId,{requestId});
+}
+function releaseGrantReservation_(ref,requestId) {
+  if(!ref || String(ref.obj['Reserved Request ID']||'')!==requestId) return;
+  ref.obj['Reserved Request ID']='';
+  writeObject_(ref.sheet,ref.row,ref.obj);
+}
+function finalizeGrantForRequest_(userId,serviceKey,requestId) {
+  const rows=objectsWithRows_(tab_(CORE.TABS.GRANTS)).filter(x=>
+    String(x.obj['Telegram User ID'])===String(userId)&&String(x.obj['Service Key'])===String(serviceKey));
+  const consumed=rows.find(x=>String(x.obj.State)===GRANT_STATE_.CONSUMED&&String(x.obj['Consumed Request ID'])===requestId);
+  if(consumed) return consumed;
+  const reserved=rows.find(x=>String(x.obj.State)===GRANT_STATE_.ACTIVE&&String(x.obj['Reserved Request ID']||'')===requestId);
+  if(reserved) { consumeReservedGrant_(reserved,requestId); return reserved; }
+  const active=rows.find(x=>String(x.obj.State)===GRANT_STATE_.ACTIVE&&!String(x.obj['Reserved Request ID']||''));
+  if(active) {
+    // Recovery path: the exact booking row already exists, but its grant was not finalized.
+    active.obj['Reserved Request ID']=requestId;
+    writeObject_(active.sheet,active.row,active.obj);
+    consumeReservedGrant_(active,requestId);
+    return active;
+  }
+  fail_('BOOKING_GRANT_ALREADY_USED','مجوز این خدمت قبلاً مصرف شده یا قابل استفاده نیست.');
+}
 function submitReceipt_(b) {
   return withLock_(() => {
     const rowRef = findBooking_(String(b.trackingCode||''),String(b.phone||''));
