@@ -22,7 +22,7 @@ const CORE = Object.freeze({
     CLOSURES: 'Closures'
   },
   HEADERS: {
-    CoreBookings: ['Request ID','Tracking Code','Appointment Code','Status','First Name','Last Name','Phone','Appointment Date','Appointment Time','Service IDs','Service Names','Subtotal','Discount Code','Discount Amount','Total','Created At','Request Expires At','Payment Expires At','Receipt File ID','Receipt MIME Type','Transaction Ref','Decision At','Decision By','Reschedule From','Requested Reschedule Date','Requested Reschedule Time','Updated At'],
+    CoreBookings: ['Request ID','Tracking Code','Appointment Code','Status','First Name','Last Name','Phone','Appointment Date','Appointment Time','Service IDs','Service Names','Subtotal','Discount Code','Discount Amount','Total','Created At','Request Expires At','Payment Expires At','Receipt File ID','Receipt MIME Type','Transaction Ref','Decision At','Decision By','Reschedule From','Requested Reschedule Date','Requested Reschedule Time','Telegram Chat ID','Telegram Username','Updated At'],
     CorePayments: ['Payment ID','Request ID','Tracking Code','Amount','Transaction Ref','Receipt File ID','Receipt MIME Type','Status','Submitted At','Reviewed At','Reviewed By','Notes'],
     CoreBookingLogs: ['Event ID','Request ID','Event','From Status','To Status','Actor','At','Details']
   },
@@ -88,12 +88,17 @@ function initializeStagingSchema() {
     let sh = ss.getSheetByName(name);
     if (!sh) sh = ss.insertSheet(name);
     const expected = CORE.HEADERS[name];
-    const current = sh.getLastRow() ? sh.getRange(1,1,1,Math.max(sh.getLastColumn(), expected.length)).getDisplayValues()[0] : [];
-    const blank = current.every(v => !String(v || '').trim());
-    if (blank) sh.getRange(1,1,1,expected.length).setValues([expected]);
-    else {
+    const lastColumn = sh.getLastColumn();
+    const current = sh.getLastRow() && lastColumn
+      ? sh.getRange(1,1,1,lastColumn).getDisplayValues()[0].map(v => String(v || '').trim())
+      : [];
+    const blank = current.every(v => !v);
+    if (blank) {
+      sh.getRange(1,1,1,expected.length).setValues([expected]);
+    } else {
+      // Staging-only additive migration: preserve existing columns and rows.
       const missing = expected.filter(h => current.indexOf(h) < 0);
-      if (missing.length) throw new Error('SCHEMA_MISMATCH_' + name + ': missing columns: ' + missing.join(', '));
+      if (missing.length) sh.getRange(1,lastColumn+1,1,missing.length).setValues([missing]);
     }
   });
   return {ok:true, spreadsheet:ss.getName(), tabs:Object.keys(CORE.HEADERS), note:'No CMS tabs or values were changed.'};
@@ -324,6 +329,7 @@ function createRequest_(b) {
     const chosen = ids.map(id => catalog.find(s => s.id === id));
     if (chosen.some(s => !s)) fail_('INVALID_SERVICE','یکی از خدمات انتخاب‌شده معتبر نیست.');
     const subtotal = chosen.reduce((sum,s) => sum + s.price,0);
+    const telegramIdentity = verifyTelegramInitData_(String(b.telegramInitData || ''));
     const discount = validateDiscountReadOnly_(String(b.discountCode || ''), subtotal);
     const suppliedRequestId = String(b.requestId || '').trim();
     if (suppliedRequestId && !/^REQ-[A-Z0-9-]{8,64}$/i.test(suppliedRequestId)) fail_('INVALID_REQUEST_ID','شناسهٔ درخواست معتبر نیست.');
@@ -345,7 +351,10 @@ function createRequest_(b) {
       'Service IDs':ids.join(','),'Service Names':chosen.map(s=>s.name).join('، '),'Subtotal':subtotal,
       'Discount Code':discount.code,'Discount Amount':discount.amount,'Total':Math.max(0,subtotal-discount.amount),
       'Created At':now,'Request Expires At':expires,'Payment Expires At':'','Receipt File ID':'','Receipt MIME Type':'',
-      'Transaction Ref':'','Decision At':'','Decision By':'','Reschedule From':'','Updated At':now
+      'Transaction Ref':'','Decision At':'','Decision By':'','Reschedule From':'',
+      'Telegram Chat ID':telegramIdentity ? String(telegramIdentity.id) : '',
+      'Telegram Username':telegramIdentity ? String(telegramIdentity.username || '') : '',
+      'Updated At':now
     };
     appendObject_(tab_(CORE.TABS.BOOKINGS),row);
     log_(requestId,'REQUEST_CREATED','',CORE.STATUS.REQUEST_PENDING,'customer',{date,time,services:ids,total:row.Total});
@@ -406,6 +415,7 @@ function adminDecision_(b) {
       if (![CORE.STATUS.REQUEST_PENDING,CORE.STATUS.RECEIPT_REVIEW].includes(row.Status)) fail_('INVALID_STATE','رد در این مرحله مجاز نیست.');
       transition_(ref,CORE.STATUS.REJECTED,actor,'ADMIN_REJECTED');
       row['Decision At']=new Date();row['Decision By']=actor;row['Updated At']=new Date();writeObject_(ref.sheet,ref.row,row);
+      notifyCustomer_(row,'درخواست نوبت پذیرفته نشد','این درخواست به تأیید نرسید. برای هماهنگی بیشتر می‌توانی با مایا در ارتباط باشی.\\nکد پیگیری: '+row['Tracking Code']);
       return {ok:true,status:row.Status};
     }
     if (decision === 'approvePayment') {
@@ -421,6 +431,7 @@ function adminDecision_(b) {
       transition_(ref,CORE.STATUS.CONFIRMED,actor,'BANK_DEPOSIT_VERIFIED');
       writeObject_(ref.sheet,ref.row,row);
       updatePaymentStatus_(id,'APPROVED',actor);
+      notifyCustomer_(row,'پرداختت تأیید شد؛ نوبت قطعی است 🎉','واریز بررسی و تأیید شد.\\nکد نوبت: '+row['Appointment Code']+'\\nزمان: '+row['Appointment Date']+' '+row['Appointment Time']+'\\nکد پیگیری: '+row['Tracking Code']);
       return {ok:true,status:row.Status,appointmentCode:row['Appointment Code']};
     }
     if (decision === 'rejectPayment') {
@@ -428,6 +439,7 @@ function adminDecision_(b) {
       transition_(ref,CORE.STATUS.REJECTED,actor,'PAYMENT_REJECTED');
       row['Decision At']=new Date();row['Decision By']=actor;row['Updated At']=new Date();writeObject_(ref.sheet,ref.row,row);
       updatePaymentStatus_(id,'REJECTED',actor);
+      notifyCustomer_(row,'فیش پرداخت نیاز به پیگیری دارد','فیش ارسالی تأیید نشد. لطفاً برای بررسی و هماهنگی با مایا در ارتباط باش.\\nکد پیگیری: '+row['Tracking Code']);
       return {ok:true,status:row.Status};
     }
     if (decision === 'approveReschedule') {
@@ -800,12 +812,62 @@ function notifyReceipt_(row,blob) {
   telegramPhoto_(token,chat,blob,caption,row['Request ID']);
 }
 function notifyCustomerPaymentWindow_(row) {
-  // Customer delivery channel is not assumed. Status polling enables reliable resume after reopening.
   log_(row['Request ID'],'PAYMENT_WINDOW_STARTED','',CORE.STATUS.PAYMENT_PENDING,'system',{deadline:row['Payment Expires At']});
+  notifyCustomer_(row,'درخواست نوبتت پذیرفته شد ❤️',
+    'درخواستت توسط مایا پذیرفته شد. از همین حالا ۳۰ دقیقه برای پرداخت و ارسال تصویر فیش فرصت داری. نوبت فقط پس از بررسی واقعی و تأیید دستی واریز قطعی می‌شود.\\nکد پیگیری: '+row['Tracking Code']+'\\nمهلت: '+new Date(row['Payment Expires At']).toISOString());
+}
+function notifyCustomer_(row,title,body) {
+  const chatId=String(row['Telegram Chat ID']||'').trim();
+  if(!chatId) {
+    log_(row['Request ID'],'CUSTOMER_TELEGRAM_SKIPPED',row.Status,row.Status,'system',{reason:'NO_VERIFIED_TELEGRAM_ID'});
+    return;
+  }
+  const response=telegram_('sendMessage',{chat_id:chatId,text:title+'\\n'+body});
+  if(!response || response.ok!==true) {
+    log_(row['Request ID'],'CUSTOMER_TELEGRAM_FAILED',row.Status,row.Status,'system',{telegramError:response && response.description || 'NO_RESPONSE'});
+  } else {
+    log_(row['Request ID'],'CUSTOMER_TELEGRAM_SENT',row.Status,row.Status,'system',{title});
+  }
+}
+/** Verify Telegram WebApp initData server-side; never trust client-supplied telegramId. */
+function verifyTelegramInitData_(initData) {
+  const raw=String(initData||'').trim();
+  const token=prop_(CORE.BOT_TOKEN_PROP);
+  if(!raw || !token) return null;
+  try {
+    const params={};
+    raw.split('&').forEach(pair=>{
+      const at=pair.indexOf('=');
+      if(at<1)return;
+      const key=decodeURIComponent(pair.slice(0,at).replace(/\\+/g,' '));
+      const value=decodeURIComponent(pair.slice(at+1).replace(/\\+/g,' '));
+      params[key]=value;
+    });
+    const suppliedHash=String(params.hash||'').toLowerCase();
+    const authDate=Number(params.auth_date||0);
+    const now=Math.floor(Date.now()/1000);
+    if(!/^[a-f0-9]{64}$/.test(suppliedHash) || !authDate || authDate>now+60 || now-authDate>86400 || !params.user) return null;
+    const checkString=Object.keys(params).filter(k=>k!=='hash').sort().map(k=>k+'='+params[k]).join('\\n');
+    const secretKey=Utilities.computeHmacSha256Signature(token,'WebAppData');
+    const expectedHash=Utilities.computeHmacSha256Signature(checkString,secretKey).map(b=>(b<0?b+256:b).toString(16).padStart(2,'0')).join('');
+    if(expectedHash!==suppliedHash) return null;
+    const user=JSON.parse(params.user);
+    if(!user || user.id===undefined || user.id===null || !/^\\d+$/.test(String(user.id))) return null;
+    return {id:String(user.id),username:String(user.username||'')};
+  } catch(err) {
+    console.error('Telegram initData verification failed',err);
+    return null;
+  }
 }
 function telegram_(method,payload) {
-  const token=prop_(CORE.BOT_TOKEN_PROP);if(!token)return;
-  UrlFetchApp.fetch('https://api.telegram.org/bot'+token+'/'+method,{method:'post',contentType:'application/json',payload:JSON.stringify(payload),muteHttpExceptions:true});
+  const token=prop_(CORE.BOT_TOKEN_PROP);if(!token)return null;
+  try {
+    const response=UrlFetchApp.fetch('https://api.telegram.org/bot'+token+'/'+method,{method:'post',contentType:'application/json',payload:JSON.stringify(payload),muteHttpExceptions:true});
+    try { return JSON.parse(response.getContentText()); } catch (_) { return {ok:false,description:'INVALID_TELEGRAM_RESPONSE'}; }
+  } catch(err) {
+    console.error('Telegram API call failed',method,err);
+    return {ok:false,description:String(err && err.message || err)};
+  }
 }
 function telegramPhoto_(token,chat,blob,caption,id) {
   const payload={chat_id:chat,photo:blob,caption,reply_markup:JSON.stringify({inline_keyboard:[[{text:'تأیید پس از بررسی بانکی',callback_data:'approvePayment:'+id},{text:'نگه‌دار برای بررسی',callback_data:'holdForReview:'+id}],[{text:'رد فیش',callback_data:'rejectPayment:'+id}]]})};
