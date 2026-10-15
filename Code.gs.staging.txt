@@ -649,10 +649,12 @@ function createRequest_(b) {
 
 function questionnaireServiceKeyForBooking_(chosen) {
   const names=chosen.map(s=>String((s.name||'')+' '+(s.category||'')).replace(/[\u200c\u200f\u200e\s_-]+/g,'').toLocaleLowerCase('fa'));
-  if(names.length!==1) return '';
-  if(/شمع.?تراپی|candletherapy/.test(names[0])) return 'candle-therapy';
-  if(/سایکوتراپی|روان.?درمانی|psychotherapy/.test(names[0])) return 'psychotherapy';
-  return '';
+  const candle=names.some(name=>/شمع.?تراپی|candletherapy/.test(name));
+  const psychotherapy=names.some(name=>/سایکوتراپی|روان.?درمانی|psychotherapy/.test(name));
+  if(!candle&&!psychotherapy) return '';
+  // Never let a therapy service bypass its grant by being bundled with another service.
+  if(names.length!==1 || (candle&&psychotherapy)) fail_('SERVICE_GRANT_SCOPE','این خدمت فقط به‌تنهایی و با مجوز اختصاصی قابل رزرو است.');
+  return candle?'candle-therapy':'psychotherapy';
 }
 function reserveGrantForRequest_(userId,serviceKey,requestId) {
   const ref=getGrantRow_(userId,serviceKey);
