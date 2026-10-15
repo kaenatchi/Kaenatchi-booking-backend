@@ -337,6 +337,10 @@ function getPublicConfig_() {
 }
 
 /** Slot generation follows the approved weekly schedule; CMS closures are overlaid read-only. */
+function isTherapyService_(s) {
+  return /درمان|تراپی|therapy|psychotherap|روان.?درمان|سایکوتراپی/i.test(String((s&&s.category||'')+' '+(s&&s.name||'')));
+}
+
 function getSlots_(date, serviceIds, excludeRequestId) {
   const tomorrow = tomorrowJalali_();
   if (String(date || tomorrow) !== tomorrow) return {ok:true,date:tomorrow,slots:[],message:'فقط برای فردا امکان ثبت درخواست وجود دارد.'};
@@ -347,8 +351,7 @@ function getSlots_(date, serviceIds, excludeRequestId) {
     const catalog=getPublicConfig_().services;
     const selected=ids.map(id=>catalog.find(s=>s.id===id));
     if(selected.some(s=>!s)) return {ok:true,date:tomorrow,slots:[],message:'یکی از خدمات انتخاب‌شده معتبر نیست.'};
-    const isTherapy=s=>/درمان|therapy|psychotherap|روان.?درمان|شمع.?درمان/i.test((s.category||'')+' '+(s.name||''));
-    const therapy=selected.some(isTherapy),energy=selected.some(s=>!isTherapy(s));
+    const therapy=selected.some(isTherapyService_),energy=selected.some(s=>!isTherapyService_(s));
     if(therapy&&energy) return {ok:true,date:tomorrow,slots:[],message:'خدمات درمانی و انرژی در یک نوبت قابل ترکیب نیستند.'};
     serviceMode=therapy?'therapy':'energy';
     duration=selected.reduce((sum,s)=>sum+Math.max(1,num_(s.duration)||30),0);
@@ -934,6 +937,9 @@ function runBookingCoreSelfTests() {
   test('Thursday energy slots are morning-only',JSON.stringify(scheduleForDay_(4))===JSON.stringify(['11:30','12:30','13:30']));
   test('Thursday energy slot at 13:30 fits 30 minutes',slotWithinServiceWindow_(4,'13:30',30));
   test('Thursday afternoon energy slot is rejected',!scheduleForDay_(4).includes('16:00'));
+  test('Persian candle therapy is classified as therapy',isTherapyService_({name:'شمع‌تراپی'}));
+  test('Persian psychotherapy is classified as therapy',isTherapyService_({name:'سایکوتراپی'}));
+  test('Energy reading is not classified as therapy',!isTherapyService_({name:'انرژی‌خوانی'}));
   test('Friday closed',scheduleForDay_(5).length===0);
   test('Regular-day last morning slot fits 30 minutes',slotWithinServiceWindow_(6,'13:00',30));
   test('Regular-day last morning slot rejects 60 minutes',!slotWithinServiceWindow_(6,'13:00',60));
