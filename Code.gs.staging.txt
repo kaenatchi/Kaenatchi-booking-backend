@@ -454,7 +454,10 @@ function reviewQuestionnaire_(b) {
     if(!ref) fail_('NOT_FOUND','فرم پیدا نشد.');
     const row=ref.obj;
     if(row.Status===QUESTIONNAIRE_STATUS_.APPROVED) {
-      if(decision==='approve') return {ok:true,status:row.Status,grant:getGrantRow_(String(row['Telegram User ID']),String(row['Service Key']))?.obj||null,message:'فرم قبلاً تأیید شده است.'};
+      if(decision==='approve') {
+        const sameGrant=objectsWithRows_(tab_(CORE.TABS.GRANTS)).find(x=>String(x.obj['Submission ID'])===id);
+        return {ok:true,status:row.Status,grant:sameGrant?sameGrant.obj:null,message:'فرم قبلاً تأیید شده است.'};
+      }
       fail_('INVALID_STATE','فرم تأییدشده را نمی‌توان با این تصمیم تغییر داد.');
     }
     if(row.Status===QUESTIONNAIRE_STATUS_.DECLINED) {
@@ -508,8 +511,13 @@ function getBookingGrant_(b) {
     grantId:ref?String(ref.obj['Grant ID']):'',message:'وضعیت مجوز فقط برای حساب و خدمت تأییدشده برگردانده شد.'};
 }
 function getGrantRow_(userId,serviceKey) {
-  const rows=objectsWithRows_(tab_(CORE.TABS.GRANTS));
-  return rows.find(x=>String(x.obj['Telegram User ID'])===String(userId)&&String(x.obj['Service Key'])===String(serviceKey)&&String(x.obj.State)!==GRANT_STATE_.REVOKED)||null;
+  const rows=objectsWithRows_(tab_(CORE.TABS.GRANTS)).filter(x=>
+    String(x.obj['Telegram User ID'])===String(userId)&&
+    String(x.obj['Service Key'])===String(serviceKey)&&
+    String(x.obj.State)!==GRANT_STATE_.REVOKED
+  );
+  // Prefer an active grant over older consumed grants if the user completed a new approval cycle.
+  return rows.find(x=>String(x.obj.State)===GRANT_STATE_.ACTIVE)||rows[rows.length-1]||null;
 }
 function revokeBookingGrant_(b) {
   return withLock_(() => {
