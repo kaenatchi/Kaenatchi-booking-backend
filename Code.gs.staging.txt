@@ -243,7 +243,10 @@ function getPublicConfig_() {
     .map(function (s) {
       return {
         id: s.id,
+        // Keep both names during the staging contract transition:
+        // the backend's canonical field is "name", while some clients consume "title".
         name: s.name,
+        title: s.name,
         category: s.category,
         description: s.description,
         price: s.price,
