@@ -25,7 +25,7 @@ const CORE = Object.freeze({
     WORKFLOW_AUDIT: 'QuestionnaireGrantAudit'
   },
   HEADERS: {
-    CoreBookings: ['Request ID','Tracking Code','Appointment Code','Status','First Name','Last Name','Phone','Appointment Date','Appointment Time','Service IDs','Service Names','Subtotal','Discount Code','Discount Amount','Total','Created At','Request Expires At','Payment Expires At','Receipt File ID','Receipt MIME Type','Transaction Ref','Decision At','Decision By','Reschedule From','Requested Reschedule Date','Requested Reschedule Time','Telegram Chat ID','Telegram Username','Updated At'],
+    CoreBookings: ['Request ID','Tracking Code','Appointment Code','Status','First Name','Last Name','Phone','Appointment Date','Appointment Time','Service IDs','Service Names','Subtotal','Discount Code','Discount Amount','Total','Created At','Request Expires At','Payment Expires At','Receipt File ID','Receipt MIME Type','Transaction Ref','Decision At','Decision By','Reschedule From','Requested Reschedule Date','Requested Reschedule Time','Telegram Chat ID','Telegram Username','Booking Grant ID','Updated At'],
     CorePayments: ['Payment ID','Request ID','Tracking Code','Amount','Transaction Ref','Receipt File ID','Receipt MIME Type','Status','Submitted At','Reviewed At','Reviewed By','Notes'],
     CoreBookingLogs: ['Event ID','Request ID','Event','From Status','To Status','Actor','At','Details'],
     QuestionnaireSubmissions: ['Submission ID','Telegram User ID','Telegram Username','Service Key','Service Name','Topic','Answers JSON','Status','Submitted At','Reviewed By','Reviewed At','Decision Note'],
@@ -603,7 +603,9 @@ function createRequest_(b) {
       if (!same) fail_('REQUEST_ID_CONFLICT','این شناسه قبلاً برای درخواست دیگری استفاده شده است.');
       if (grantServiceKey) {
         if (!telegramIdentity || String(prior.obj['Telegram Chat ID']||'')!==telegramIdentity.id) fail_('REQUEST_OWNER_MISMATCH','این درخواست به حساب تلگرام دیگری تعلق دارد.');
-        finalizeGrantForRequest_(telegramIdentity.id,grantServiceKey,requestId);
+        const priorGrantId=String(prior.obj['Booking Grant ID']||'');
+        if(!priorGrantId) fail_('REQUEST_GRANT_MISMATCH','این درخواست با مجوز قابل بازیابی مرتبط نیست.');
+        finalizeGrantForRequest_(telegramIdentity.id,grantServiceKey,requestId,priorGrantId);
       }
       return {ok:true,requestId:requestId,trackingCode:String(prior.obj['Tracking Code']||''),status:String(prior.obj.Status||''),expiresAt:prior.obj['Request Expires At'] ? new Date(prior.obj['Request Expires At']).toISOString() : null,total:Number(prior.obj.Total||0),discountAmount:Number(prior.obj['Discount Amount']||0),message:'درخواست قبلی بازیابی شد؛ درخواست تکراری ساخته نشد.'};
     }
@@ -611,6 +613,8 @@ function createRequest_(b) {
     if (!slot || slot.status !== 'AVAILABLE') fail_('SLOT_UNAVAILABLE','این زمان دیگر در دسترس نیست؛ زمان دیگری انتخاب کن.');
     const now = new Date();
     const tracking = Utilities.getUuid().replace(/-/g,'').slice(0,24).toUpperCase();
+    let reservedGrant=null;
+    if (grantServiceKey) reservedGrant=reserveGrantForRequest_(telegramIdentity.id,grantServiceKey,requestId);
     const expires = new Date(now.getTime()+CORE.REQUEST_TTL_MS);
     const row = {
       'Request ID':requestId,'Tracking Code':tracking,'Appointment Code':'','Status':CORE.STATUS.REQUEST_PENDING,
@@ -621,10 +625,9 @@ function createRequest_(b) {
       'Transaction Ref':'','Decision At':'','Decision By':'','Reschedule From':'',
       'Telegram Chat ID':telegramIdentity ? String(telegramIdentity.id) : '',
       'Telegram Username':telegramIdentity ? String(telegramIdentity.username || '') : '',
+      'Booking Grant ID':reservedGrant ? String(reservedGrant.obj['Grant ID']) : '',
       'Updated At':now
     };
-    let reservedGrant=null;
-    if (grantServiceKey) reservedGrant=reserveGrantForRequest_(telegramIdentity.id,grantServiceKey,requestId);
     let bookingWritten=false;
     try {
       appendObject_(tab_(CORE.TABS.BOOKINGS),row);
@@ -643,7 +646,7 @@ function createRequest_(b) {
 }
 
 function questionnaireServiceKeyForBooking_(chosen) {
-  const names=chosen.map(s=>String((s.name||'')+' '+(s.category||'')).replace(/[\\u200c\\u200f\\u200e\\s_-]+/g,'').toLocaleLowerCase('fa'));
+  const names=chosen.map(s=>String((s.name||'')+' '+(s.category||'')).replace(/[\u200c\u200f\u200e\s_-]+/g,'').toLocaleLowerCase('fa'));
   if(names.length!==1) return '';
   if(/شمع.?تراپی|candletherapy/.test(names[0])) return 'candle-therapy';
   if(/سایکوتراپی|روان.?درمانی|psychotherapy/.test(names[0])) return 'psychotherapy';
@@ -670,8 +673,9 @@ function releaseGrantReservation_(ref,requestId) {
   ref.obj['Reserved Request ID']='';
   writeObject_(ref.sheet,ref.row,ref.obj);
 }
-function finalizeGrantForRequest_(userId,serviceKey,requestId) {
+function finalizeGrantForRequest_(userId,serviceKey,requestId,grantId) {
   const rows=objectsWithRows_(tab_(CORE.TABS.GRANTS)).filter(x=>
+    String(x.obj['Grant ID'])===String(grantId)&&
     String(x.obj['Telegram User ID'])===String(userId)&&String(x.obj['Service Key'])===String(serviceKey));
   const consumed=rows.find(x=>String(x.obj.State)===GRANT_STATE_.CONSUMED&&String(x.obj['Consumed Request ID'])===requestId);
   if(consumed) return consumed;
