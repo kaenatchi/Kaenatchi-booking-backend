@@ -681,11 +681,12 @@ function slotWithinServiceWindow_(day,time,duration) {
   const start=minutes_(time);
   if(start<0||!Number.isFinite(Number(duration))||Number(duration)<=0)return false;
   const end=start+Number(duration);
-  // Sunday and Tuesday use half-hour start times and their final listed starts
-  // (13:30 and 18:30) require the corresponding 14:00 / 19:00 session end.
-  const halfHourDay=day===0||day===2;
-  const morningEnd=halfHourDay?14*60:13*60+30;
-  const eveningEnd=halfHourDay?19*60:18*60+30;
+  // Sunday, Tuesday, and Thursday morning use half-hour starts; the 13:30
+  // energy-reading slot must be allowed to finish at 14:00.
+  const halfHourMorning=day===0||day===2||day===4;
+  const halfHourEvening=day===0||day===2;
+  const morningEnd=halfHourMorning?14*60:13*60+30;
+  const eveningEnd=halfHourEvening?19*60:18*60+30;
   const inMorning=start>=11*60&&end<=morningEnd;
   const inEvening=start>=16*60&&end<=eveningEnd;
   return inMorning||inEvening;
@@ -693,7 +694,8 @@ function slotWithinServiceWindow_(day,time,duration) {
 function scheduleForDay_(day) {
   // JS weekday: 0 Sun, 1 Mon, ... 6 Sat
   if(day===5) return [];
-  if(day===4) return ['11:00','12:00','13:00','16:00','17:00','18:00'];
+  // Thursday is morning-only; do not expose any afternoon energy-reading slots.
+  if(day===4) return ['11:30','12:30','13:30'];
   if([6,1,3].includes(day)) return ['11:00','12:00','13:00','16:00','17:00','18:00'];
   if([0,2].includes(day)) return ['11:30','12:30','13:30','16:30','17:30','18:30'];
   return [];
