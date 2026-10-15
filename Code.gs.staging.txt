@@ -394,7 +394,7 @@ function submitQuestionnaire_(b) {
     const service=QUESTIONNAIRE_SERVICES_[serviceKey];
     if(!service) fail_('INVALID_QUESTIONNAIRE_SERVICE','خدمت انتخاب‌شده برای این فرم معتبر نیست.');
     const submissionId=String(b.submissionId||'').trim();
-    if(!/^QST-[A-Z0-9-]{8,64}$/i.test(submissionId)) fail_('INVALID_SUBMISSION_ID','شناسه فرم معتبر نیست.');
+    if(!/^QST-[A-Z0-9-]{8,36}$/i.test(submissionId)) fail_('INVALID_SUBMISSION_ID','شناسه فرم معتبر نیست.');
     const topic=String(b.topic||'').trim();
     if(serviceKey==='candle-therapy'&&!service.topics.includes(topic)) fail_('INVALID_TOPIC','یک موضوع معتبر انتخاب کن.');
     const answers=b.answers&&typeof b.answers==='object'&&!Array.isArray(b.answers)?b.answers:{};
