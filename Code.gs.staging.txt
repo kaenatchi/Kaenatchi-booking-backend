@@ -448,24 +448,28 @@ function adminDecision_(b) {
       if(!isSlotAvailableFor_(d,t,String(row['Service IDs']||'').split(',').filter(Boolean),id)) fail_('SLOT_UNAVAILABLE','زمان پیشنهادی دیگر در دسترس نیست؛ نوبت قبلی حفظ شده است.');
       row['Appointment Date']=d;row['Appointment Time']=t;row['Appointment Code']='KC-'+Utilities.getUuid().replace(/-/g,'').slice(0,10).toUpperCase();row['Requested Reschedule Date']='';row['Requested Reschedule Time']='';row.Status=CORE.STATUS.CONFIRMED;row['Updated At']=new Date();writeObject_(ref.sheet,ref.row,row);
       log_(id,'RESCHEDULE_APPROVED',CORE.STATUS.RESCHEDULE_REQUESTED,CORE.STATUS.CONFIRMED,actor,{newDate:d,newTime:t,oldSlotReleased:true});
+      notifyCustomer_(row,'تغییر زمان نوبت تأیید شد','زمان جدید نوبتت ثبت شد.\\nکد نوبت: '+row['Appointment Code']+'\\nزمان جدید: '+d+' '+t+'\\nکد پیگیری: '+row['Tracking Code']);
       return {ok:true,status:row.Status,date:d,time:t,appointmentCode:row['Appointment Code']};
     }
     if (decision === 'rejectReschedule') {
       if (row.Status !== CORE.STATUS.RESCHEDULE_REQUESTED) fail_('INVALID_STATE','درخواست تغییر زمان در صف بررسی نیست.');
       row['Requested Reschedule Date']='';row['Requested Reschedule Time']='';row.Status=CORE.STATUS.CONFIRMED;row['Updated At']=new Date();writeObject_(ref.sheet,ref.row,row);
       log_(id,'RESCHEDULE_REJECTED',CORE.STATUS.RESCHEDULE_REQUESTED,CORE.STATUS.CONFIRMED,actor,{oldSlotRetained:true});
+      notifyCustomer_(row,'درخواست تغییر زمان تأیید نشد','نوبت قبلی‌ات همچنان برقرار است. برای هماهنگی بیشتر با مایا در ارتباط باش.\\nکد پیگیری: '+row['Tracking Code']);
       return {ok:true,status:row.Status,message:'درخواست تغییر زمان رد شد؛ نوبت قبلی حفظ شد.'};
     }
     if (decision === 'approveCancel') {
       if (row.Status !== CORE.STATUS.CANCEL_REQUESTED) fail_('INVALID_STATE','درخواست لغو در صف بررسی نیست.');
       transition_(ref,CORE.STATUS.CANCELLED,actor,'CANCELLATION_APPROVED');
       row['Decision At']=new Date();row['Decision By']=actor;row['Updated At']=new Date();writeObject_(ref.sheet,ref.row,row);
+      notifyCustomer_(row,'درخواست لغو ثبت شد','لغو نوبت بررسی شد. اگر بازپرداخت لازم باشد، انتقال وجه به‌صورت دستی انجام می‌شود. برای هماهنگی با مایا در ارتباط باش.\\nکد پیگیری: '+row['Tracking Code']);
       return {ok:true,status:row.Status,refundRequiresManualProcessing:true,message:'لغو ثبت شد؛ بازپرداخت کارت‌به‌کارت باید دستی انجام شود.'};
     }
     if (decision === 'rejectCancel') {
       if (row.Status !== CORE.STATUS.CANCEL_REQUESTED) fail_('INVALID_STATE','درخواست لغو در صف بررسی نیست.');
       row.Status=CORE.STATUS.CONFIRMED;row['Decision At']=new Date();row['Decision By']=actor;row['Updated At']=new Date();writeObject_(ref.sheet,ref.row,row);
       log_(id,'CANCELLATION_REJECTED',CORE.STATUS.CANCEL_REQUESTED,CORE.STATUS.CONFIRMED,actor,{});
+      notifyCustomer_(row,'نوبتت همچنان برقرار است','درخواست لغو تأیید نشد و نوبت قبلی حفظ شده است. برای هماهنگی با مایا در ارتباط باش.\\nکد پیگیری: '+row['Tracking Code']);
       return {ok:true,status:row.Status,message:'درخواست لغو رد شد؛ نوبت حفظ شد.'};
     }
     if (decision === 'holdForReview') {
@@ -486,6 +490,7 @@ function requestCancel_(b) {
     // cutoff or penalty is applied here. Illness/emergency can be handled as a
     // reschedule first, with refund considered if no suitable slot exists.
     transition_(ref,CORE.STATUS.CANCEL_REQUESTED,'customer','CANCEL_REQUESTED');
+    notifyAdmin_(ref.obj['Request ID'],'درخواست لغو نوبت',ref.obj);
     return {ok:true,status:CORE.STATUS.CANCEL_REQUESTED,message:'درخواست لغو/بازپرداخت برای بررسی مایا ثبت شد؛ خودکار لغو یا بازپرداخت نمی‌شود.'};
   });
 }
@@ -523,6 +528,7 @@ function managerRescheduleOffer_(b) {
     if(ref.obj.Status!==CORE.STATUS.CONFIRMED) fail_('INVALID_STATE','فقط نوبت قطعی را می‌توان برای تغییر زمان پیشنهاد داد.');
     ref.obj.Status=CORE.STATUS.MANAGER_RESCHEDULE_OFFERED;ref.obj['Updated At']=new Date();writeObject_(ref.sheet,ref.row,ref.obj);
     log_(ref.obj['Request ID'],'MANAGER_RESCHEDULE_OFFERED',CORE.STATUS.CONFIRMED,CORE.STATUS.MANAGER_RESCHEDULE_OFFERED,'admin',{oldSlotRetained:true});
+    notifyCustomer_(ref.obj,'پیشنهاد تغییر زمان از طرف مایا','مایا برای تغییر زمان نوبتت پیشنهاد داده است. نوبت فعلی تا انتخاب زمان جدید حفظ می‌شود. لطفاً مینی‌اپ را باز کن و زمان مناسب را انتخاب کن.\\nکد پیگیری: '+ref.obj['Tracking Code']);
     return {ok:true,status:ref.obj.Status,message:'پیشنهاد تغییر زمان ثبت شد؛ نوبت قبلی تا انتخاب مشتری نگه داشته می‌شود.'};
   });
 }
@@ -540,6 +546,7 @@ function acceptManagerReschedule_(b) {
     ref.obj.Status=CORE.STATUS.CONFIRMED;ref.obj['Updated At']=new Date();writeObject_(ref.sheet,ref.row,ref.obj);
     log_(ref.obj['Request ID'],'MANAGER_RESCHEDULE_ACCEPTED',CORE.STATUS.MANAGER_RESCHEDULE_OFFERED,CORE.STATUS.CONFIRMED,'customer',{old,newDate:d,newTime:t,oldSlotReleased:true});
     notifyAdmin_(ref.obj['Request ID'],'تغییر زمان پیشنهادی تأیید شد',ref.obj);
+    notifyCustomer_(ref.obj,'زمان جدید نوبتت ثبت شد','پیشنهاد تغییر زمان پذیرفته شد و نوبت قبلی با زمان جدید جایگزین شد. پرداخت مجدد لازم نیست.\\nکد نوبت: '+ref.obj['Appointment Code']+'\\nزمان جدید: '+d+' '+t+'\\nکد پیگیری: '+ref.obj['Tracking Code']);
     return {ok:true,status:ref.obj.Status,date:d,time:t,appointmentCode:ref.obj['Appointment Code'],message:'زمان جدید ثبت شد؛ پرداخت مجدد لازم نیست.'};
   });
 }
