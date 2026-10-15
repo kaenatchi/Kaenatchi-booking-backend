@@ -58,6 +58,48 @@ function doGet(e) {
   }
 }
 
+
+/**
+ * Read-only CMS connection/contract check for STAGING.
+ * Makes one GET request to the published CMS API through getPublicConfig_().
+ * Does not write to Sheets, Script Properties, CMS, VIP, or Telegram.
+ */
+function auditStagingCmsReadOnly() {
+  const report = {
+    ok: false,
+    readOnly: true,
+    cmsReachable: false,
+    contractValid: false,
+    serviceCount: 0,
+    servicesWithStableIds: 0,
+    servicesWithValidPrices: 0,
+    error: ''
+  };
+
+  try {
+    const config = getPublicConfig_();
+    const services = Array.isArray(config.services) ? config.services : [];
+    report.cmsReachable = true;
+    report.contractValid = true;
+    report.serviceCount = services.length;
+    report.servicesWithStableIds = services.filter(s =>
+      s && typeof s.id === 'string' && s.id.trim()
+    ).length;
+    report.servicesWithValidPrices = services.filter(s =>
+      s && Number.isFinite(Number(s.price)) && Number(s.price) >= 0
+    ).length;
+    report.ok = services.length > 0 &&
+      report.servicesWithStableIds === services.length &&
+      report.servicesWithValidPrices === services.length;
+    if (!report.ok) report.error = 'SERVICE_DATA_VALIDATION_FAILED';
+  } catch (err) {
+    report.error = String(err && (err.code || err.message) || 'CMS_UNAVAILABLE');
+  }
+
+  console.log(JSON.stringify(report, null, 2));
+  return report;
+}
+
 function doPost(e) {
   try {
     const raw = e && e.postData && e.postData.contents;
