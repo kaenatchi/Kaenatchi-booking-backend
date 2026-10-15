@@ -946,6 +946,9 @@ function runBookingCoreSelfTests() {
   test('Candle therapy remains bookable',!isAggregateServiceName_('شمعتراپی'));
   test('Psychotherapy remains bookable',!isAggregateServiceName_('سایکوتراپی'));
   test('Persian therapy classification is shared by reschedule validation',isTherapyService_({name:'سایکوتراپی'}));
+  test('Candle therapy maps to its one-time grant',questionnaireServiceKeyForBooking_([{name:'شمع‌تراپی',category:''}])==='candle-therapy');
+  test('Psychotherapy maps to its one-time grant',questionnaireServiceKeyForBooking_([{name:'سایکوتراپی',category:''}])==='psychotherapy');
+  test('Energy reading does not require a therapy grant',questionnaireServiceKeyForBooking_([{name:'انرژی‌خوانی',category:''}])==='');
   test('Friday closed',scheduleForDay_(5).length===0);
   test('Regular-day last morning slot fits 30 minutes',slotWithinServiceWindow_(6,'13:00',30));
   test('Regular-day last morning slot rejects 60 minutes',!slotWithinServiceWindow_(6,'13:00',60));
