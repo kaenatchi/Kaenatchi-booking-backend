@@ -641,6 +641,9 @@ function runBookingCoreSelfTests() {
   const test=(name,ok,detail)=>checks.push({name,ok:!!ok,detail:detail||''});
   test('Saturday energy slots',JSON.stringify(scheduleForDay_(6))===JSON.stringify(['11:00','12:00','13:00','16:00','17:00','18:00']));
   test('Sunday energy slots',JSON.stringify(scheduleForDay_(0))===JSON.stringify(['11:30','12:30','13:30','16:30','17:30','18:30']));
+  test('Thursday energy slots are morning-only',JSON.stringify(scheduleForDay_(4))===JSON.stringify(['11:30','12:30','13:30']));
+  test('Thursday energy slot at 13:30 fits 30 minutes',slotWithinServiceWindow_(4,'13:30',30));
+  test('Thursday afternoon energy slot is rejected',!scheduleForDay_(4).includes('16:00'));
   test('Friday closed',scheduleForDay_(5).length===0);
   test('Regular-day last morning slot fits 30 minutes',slotWithinServiceWindow_(6,'13:00',30));
   test('Regular-day last morning slot rejects 60 minutes',!slotWithinServiceWindow_(6,'13:00',60));
