@@ -650,6 +650,7 @@ function runBookingCoreSelfTests() {
   test('Persian candle therapy is classified as therapy',isTherapyService_({name:'شمع‌تراپی'}));
   test('Persian psychotherapy is classified as therapy',isTherapyService_({name:'سایکوتراپی'}));
   test('Energy reading is not classified as therapy',!isTherapyService_({name:'انرژی‌خوانی'}));
+  test('Persian therapy classification is shared by reschedule validation',isTherapyService_({name:'سایکوتراپی'}));
   test('Friday closed',scheduleForDay_(5).length===0);
   test('Regular-day last morning slot fits 30 minutes',slotWithinServiceWindow_(6,'13:00',30));
   test('Regular-day last morning slot rejects 60 minutes',!slotWithinServiceWindow_(6,'13:00',60));
@@ -787,9 +788,8 @@ function isSlotAvailableFor_(date,time,serviceIds,excludeRequestId) {
   const selected=ids.map(id=>catalog.find(s=>s.id===id));
   // Reject unknown service IDs rather than silently treating them as a shorter booking.
   if(selected.some(s=>!s)) return false;
-  const isTherapy=s=>/درمان|therapy|psychotherap|روان.?درمان|شمع.?درمان/i.test((s.category||'')+' '+(s.name||''));
-  const therapy=selected.some(isTherapy);
-  const energy=selected.some(s=>!isTherapy(s));
+  const therapy=selected.some(isTherapyService_);
+  const energy=selected.some(s=>!isTherapyService_(s));
   if(therapy&&energy) return false;
   const duration=selected.reduce((sum,s)=>sum+Math.max(1,num_(s.duration)||30),0);
   if(therapy ? day!==4 || !therapySlots_().includes(time) : !scheduleForDay_(day).includes(time)) return false;
